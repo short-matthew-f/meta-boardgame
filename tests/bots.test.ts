@@ -6,6 +6,7 @@ import { actionKey, createGame, legalActions, step } from '../engine/engine.ts';
 import type { Action, GameState } from '../engine/types.ts';
 import { Rng } from '../engine/rng.ts';
 import { playGame } from '../sim/runner.ts';
+import { shortLabel } from '../bots/explain.ts';
 
 const HEURISTICS = ['random', 'greedy', 'greedy-random', 'scorer', 'aggressor', 'turtle', 'expander'];
 
@@ -262,5 +263,21 @@ describe('bot explanations', () => {
     const again = botByName('greedy').decide(s, legalActions(s), new Rng(1));
     expect(again.action).toEqual({ type: 'reroll' });
     expect(again.candidates[0]!.why).toBe('Reroll: 2 is below reroll threshold 3');
+  });
+});
+
+describe('decide() candidate labels', () => {
+  it('lists each option once when the shop holds two copies of a tile', () => {
+    for (const bot of Object.values(BOTS)) {
+      const s = createGame(defaultConfig({ players: 2 }), 7);
+      s.phase = 'shop';
+      s.shopActionsLeft = 1;
+      s.shop = ['bandit-camp', 'bandit-camp', 'market', 'market', 'shrine', 'shrine'];
+      s.players[0]!.coins = 20;
+      const d = bot.decide(s, legalActions(s), new Rng(3));
+      const labels = d.candidates.map((c) => shortLabel(s, c.action));
+      expect(new Set(labels).size, `${bot.name}: ${labels.join(' | ')}`).toBe(labels.length);
+      expect(d.candidates[0]!.action).toEqual(d.action);
+    }
   });
 });

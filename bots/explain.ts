@@ -32,6 +32,10 @@ export function pickBest(values: readonly number[], rng: { pick<U>(a: readonly U
  * With `group`, the cap prefers one option per group (best first): six slots
  * for the same tile are one question, so the other tiles get shown too, and
  * remaining places fill by score. Either way the list stays sorted by score.
+ *
+ * With `label`, options with the same label as one already shown (the chosen
+ * one, or a higher-scoring one) are dropped: two copies of a tile in the shop
+ * are the same option to a reader.
  */
 export function buildDecision(
   actions: readonly Action[],
@@ -40,6 +44,7 @@ export function buildDecision(
   why: (index: number) => string,
   note?: string,
   group?: (index: number) => string,
+  label?: (index: number) => string,
 ): Decision {
   // Options that tied the chosen one (within pickBest's 1e-9) are reported at its exact
   // score, so float noise never lists a tied option above the chosen action.
@@ -49,6 +54,14 @@ export function buildDecision(
   const rest: number[] = [];
   for (let i = 0; i < actions.length; i++) if (i !== chosen && Number.isFinite(shown[i]!)) rest.push(i);
   rest.sort(byScore);
+  if (label) {
+    const labels = new Set([label(chosen)]);
+    for (let k = 0; k < rest.length; k++) {
+      const l = label(rest[k]!);
+      if (labels.has(l)) rest.splice(k--, 1);
+      else labels.add(l);
+    }
+  }
   let picked = rest.slice(0, MAX_CANDIDATES - 1);
   if (group && rest.length > picked.length) {
     const seen = new Set([group(chosen)]);

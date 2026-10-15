@@ -12,6 +12,6 @@ export const randomBot: Bot = {
     const p = 1 / legal.length;
     const scores = legal.map(() => p);
     const why = (i: number) => `${shortLabel(state, legal[i]!)}: equal chance, 1 in ${legal.length}`;
-    return buildDecision(legal, scores, chosen, why, `picked uniformly at random from ${legal.length} legal actions`);
+    return buildDecision(legal, scores, chosen, why, `picked uniformly at random from ${legal.length} legal actions`, undefined, (i) => shortLabel(state, legal[i]!));
   },
 };

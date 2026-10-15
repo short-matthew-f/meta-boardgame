@@ -149,6 +149,6 @@ export const lookaheadBot: Bot = {
     };
     let note = 'one-ply expected value: (VP + 0.5 × coins + 0.45 × cost of owned tiles) against the best opponent';
     if (ev.pruned > 0) note += `; shop options pruned to the best slot per tile (${ev.items.length} of ${legal.length} evaluated)`;
-    return buildDecision(ev.items, ev.values, chosen, why, note);
+    return buildDecision(ev.items, ev.values, chosen, why, note, undefined, (i) => shortLabel(state, ev.items[i]!));
   },
 };

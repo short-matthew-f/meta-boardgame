@@ -243,7 +243,7 @@ export function makeProfileBot(profile: Profile): Bot {
           return v === leaderV ? `${label}: ${v} ${unit}, tied with the leader` : `${label}: ${v} ${unit}, behind the leader`;
         };
         const note = `${profile.name}: target policy is ${profile.targetPolicy}`;
-        return buildDecision(legal, scores, chosen, why, note);
+        return buildDecision(legal, scores, chosen, why, note, undefined, (i) => shortLabel(state, legal[i]!));
       }
 
       if (first.type === 'reroll' || first.type === 'keepRoll') {
@@ -259,7 +259,7 @@ export function makeProfileBot(profile: Profile): Bot {
           return doReroll ? `Keep ${total}: below reroll threshold ${t}, so rerolling instead` : `Keep ${total}: at or above reroll threshold ${t}`;
         };
         const note = t === 0 ? `${profile.name}: never rerolls` : `${profile.name}: rerolls when the total is below ${t}`;
-        return buildDecision(legal, scores, chosen, why, note);
+        return buildDecision(legal, scores, chosen, why, note, undefined, (i) => shortLabel(state, legal[i]!));
       }
 
       if (legal.length === 1) return onlyOption(state, first);
@@ -325,7 +325,7 @@ export function makeProfileBot(profile: Profile): Bot {
           default: return a.type;
         }
       };
-      return buildDecision(legal, scores, chosen, why, note, group);
+      return buildDecision(legal, scores, chosen, why, note, group, (i) => shortLabel(state, legal[i]!));
     },
   };
 }
