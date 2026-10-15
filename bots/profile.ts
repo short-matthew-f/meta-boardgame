@@ -1,9 +1,11 @@
 // A bot archetype is a weight table. Every legal action is scored, the max
 // wins, ties break with the bot RNG. Adding a style is adding a Profile.
-import type { Action, Effect, GameState, Tag, TileDef } from '../engine/types.ts';
+import type { Action, Effect, GameState, PlayerState, Tag, TileDef } from '../engine/types.ts';
 import type { Rng } from '../engine/rng.ts';
 import { countAdjacentWithTag, effectiveDice, landingMass, tileDef } from '../engine/board.ts';
-import type { Bot } from './types.ts';
+import { modName, tileName } from '../engine/describe.ts';
+import type { Bot, Decision } from './types.ts';
+import { buildDecision, fixed, num, onlyOption, pickBest, sgn, shortLabel } from './explain.ts';
 
 export type TargetPolicy = 'coinLeader' | 'vpLeader' | 'random';
 export type Placement = 'likely' | 'adjacentScore' | 'clusterCombo' | 'random';
@@ -65,7 +67,8 @@ function leaderBy(state: GameState, me: number, key: 'coins' | 'vp'): number {
   return best;
 }
 
-function placementScore(state: GameState, me: number, slot: number, def: TileDef, placement: Placement, mass: () => Map<number, number>): number {
+/** Raw landing/adjacency measure behind the placement term (before `placementWeight`). */
+function placementRaw(state: GameState, me: number, slot: number, def: TileDef, placement: Placement, mass: () => Map<number, number>): number {
   switch (placement) {
     case 'likely': {
       if (!def.onLand) return 0;
@@ -80,75 +83,249 @@ function placementScore(state: GameState, me: number, slot: number, def: TileDef
   }
 }
 
+// ---------------------------------------------------------------------------
+// Scoring. `scoreAction` is the one place the numbers are computed; it fills
+// `Parts` with every term it added so `decide` can describe them. `choose`
+// passes a scratch Parts and ignores it, so nothing is formatted on that path.
+
+type Parts = {
+  tagName: Tag | null; // tag that supplied the tag weight
+  tag: number; // tag weight
+  vpc: number; // VP-per-coin bonus (Scorer)
+  placeRaw: number; // landing probability or adjacency measure
+  place: number; // placeRaw × placementWeight
+  cost: number; // penalty subtracted for coins spent
+  replace: number; // penalty subtracted for replacing a tile
+  replaced: string | null; // id of the tile being replaced
+  insert: number; // bonus for an Expansion that carries a tile
+  weight: number; // mod weight
+  listed: boolean; // mod weight came from the profile
+  base: number; // pass / sell weight
+  blocked: boolean; // mod purchase refused by the coin reserve
+};
+
+function newParts(): Parts {
+  return { tagName: null, tag: 0, vpc: 0, placeRaw: 0, place: 0, cost: 0, replace: 0, replaced: null, insert: 0, weight: 0, listed: false, base: 0, blocked: false };
+}
+
+type ScoreCtx = {
+  profile: Profile;
+  state: GameState;
+  me: number;
+  p: PlayerState;
+  weights: Partial<Record<Tag, number>>;
+  mass: () => Map<number, number>;
+};
+
+function makeCtx(profile: Profile, state: GameState): ScoreCtx {
+  const me = state.activePlayer;
+  const p = state.players[me]!;
+  let massCache: Map<number, number> | null = null;
+  return {
+    profile, state, me, p,
+    weights: state.round < profile.switchRound ? profile.early : profile.late,
+    mass: () => (massCache ??= landingMass(p.position, effectiveDice(state, me), p.board.length, profile.lookRolls ?? 3)),
+  };
+}
+
+function tagWeight(c: ScoreCtx, def: TileDef, parts: Parts): number {
+  let w = -Infinity;
+  parts.tagName = null;
+  for (const t of def.tags) {
+    const x = c.weights[t] ?? 0;
+    if (x > w) { w = x; parts.tagName = t; }
+  }
+  return w === -Infinity ? 0 : w;
+}
+
+function scoreAction(c: ScoreCtx, a: Action, parts: Parts): number {
+  const { profile, state, me, p } = c;
+  switch (a.type) {
+    case 'pass':
+      parts.base = profile.passWeight;
+      return profile.passWeight;
+    case 'buyTile': {
+      const def = tileDef(state.config, state.shop[a.shopIndex]!);
+      let s = parts.tag = tagWeight(c, def, parts);
+      parts.vpc = 0;
+      if (profile.vpPerCoin && def.tags.includes('score')) s += parts.vpc = (staticValue(def).vp / def.cost) * 4;
+      parts.placeRaw = placementRaw(state, me, a.slot, def, profile.placement, c.mass);
+      s += parts.place = parts.placeRaw * profile.placementWeight;
+      s -= parts.cost = def.cost * profile.costWeight;
+      const old = p.board[a.slot];
+      parts.replace = 0;
+      parts.replaced = old ?? null;
+      if (old != null) s -= parts.replace = tileDef(state.config, old).cost * profile.replaceWeight;
+      return s;
+    }
+    case 'buyExpansion': {
+      const def = tileDef(state.config, state.shop[a.shopIndex]!);
+      let s = (parts.tag = tagWeight(c, def, parts)) - (parts.cost = def.cost * profile.costWeight);
+      parts.insert = 0;
+      if (def.insertTile) s += parts.insert = 0.5;
+      return s;
+    }
+    case 'buyMod': {
+      const cost = state.config.modSet.find((m) => m.id === a.modId)?.cost ?? 0;
+      if (p.coins - cost < profile.modReserve) { parts.blocked = true; return -Infinity; }
+      parts.listed = a.modId in profile.modWeights;
+      parts.weight = profile.modWeights[a.modId] ?? -1;
+      return parts.weight - (parts.cost = cost * profile.costWeight);
+    }
+    case 'sellTile':
+      parts.base = profile.sellWeight;
+      return profile.sellWeight;
+    default:
+      return 0;
+  }
+}
+
+// Prompts shared by choose and decide.
+
+function targetStat(profile: Profile): 'coins' | 'vp' | null {
+  return profile.targetPolicy === 'coinLeader' ? 'coins' : profile.targetPolicy === 'vpLeader' ? 'vp' : null;
+}
+
+function rerolls(profile: Profile, state: GameState): boolean {
+  return (state.pending?.lastTotal ?? 0) < profile.rerollBelow;
+}
+
+function weightList(w: Partial<Record<Tag, number>>): string {
+  const parts = Object.entries(w).map(([k, v]) => `${k} ${num(v as number)}`);
+  return parts.length > 0 ? parts.join(', ') : 'all zero';
+}
+
 export function makeProfileBot(profile: Profile): Bot {
   return {
     name: profile.name,
+
     choose(state, legal, rng) {
       const me = state.activePlayer;
       const first = legal[0]!;
       // Pending prompts
       if (first.type === 'chooseTarget') {
-        const want = profile.targetPolicy === 'coinLeader' ? leaderBy(state, me, 'coins')
-          : profile.targetPolicy === 'vpLeader' ? leaderBy(state, me, 'vp') : -1;
+        const stat = targetStat(profile);
+        const want = stat ? leaderBy(state, me, stat) : -1;
         const hit = legal.find((a) => a.type === 'chooseTarget' && a.player === want);
         return hit ?? rng.pick(legal);
       }
       if (first.type === 'reroll' || first.type === 'keepRoll') {
-        const total = state.pending?.lastTotal ?? 0;
-        return total < profile.rerollBelow ? { type: 'reroll' } : { type: 'keepRoll' };
+        return rerolls(profile, state) ? { type: 'reroll' } : { type: 'keepRoll' };
       }
       if (legal.length === 1) return first;
 
-      const weights = state.round < profile.switchRound ? profile.early : profile.late;
-      const p = state.players[me]!;
-      let massCache: Map<number, number> | null = null;
-      const mass = () => (massCache ??= landingMass(p.position, effectiveDice(state, me), p.board.length, profile.lookRolls ?? 3));
-      let best: Action[] = [];
-      let bestScore = -Infinity;
-      for (const a of legal) {
-        const s = score(a);
-        if (s > bestScore + 1e-9) { bestScore = s; best = [a]; }
-        else if (Math.abs(s - bestScore) <= 1e-9) best.push(a);
-      }
-      return best.length === 1 ? best[0]! : rng.pick(best);
+      const c = makeCtx(profile, state);
+      const scratch = newParts();
+      const scores = new Array<number>(legal.length);
+      for (let i = 0; i < legal.length; i++) scores[i] = scoreAction(c, legal[i]!, scratch);
+      return legal[pickBest(scores, rng)]!;
+    },
 
-      function tagWeight(def: TileDef): number {
-        let w = -Infinity;
-        for (const t of def.tags) w = Math.max(w, weights[t] ?? 0);
-        return w === -Infinity ? 0 : w;
+    decide(state, legal, rng): Decision {
+      const me = state.activePlayer;
+      const first = legal[0]!;
+
+      if (first.type === 'chooseTarget') {
+        const stat = targetStat(profile);
+        const want = stat ? leaderBy(state, me, stat) : -1;
+        const hitIdx = legal.findIndex((a) => a.type === 'chooseTarget' && a.player === want);
+        const chosen = hitIdx >= 0 ? hitIdx : legal.indexOf(rng.pick(legal));
+        const value = (a: Action) => (stat && a.type === 'chooseTarget' ? state.players[a.player]![stat] : 0);
+        const scores = legal.map(value);
+        const unit = stat === 'vp' ? 'VP' : 'coins';
+        const leaderV = stat ? scores[chosen]! : 0;
+        const why = (i: number) => {
+          const label = shortLabel(state, legal[i]!);
+          if (!stat) return i === chosen ? `${label}: picked at random from ${legal.length} targets` : `${label}: one of ${legal.length} equally likely targets`;
+          const v = scores[i]!;
+          const tied = scores.some((x, j) => j !== i && x === v);
+          if (i === chosen) return `${label}: ${stat === 'vp' ? 'VP' : 'coin'} leader (${v} ${unit}${tied ? ', tied; lowest seat first' : ''})`;
+          return v === leaderV ? `${label}: ${v} ${unit}, tied with the leader` : `${label}: ${v} ${unit}, behind the leader`;
+        };
+        const note = `${profile.name}: target policy is ${profile.targetPolicy}`;
+        return buildDecision(legal, scores, chosen, why, note);
       }
 
-      function score(a: Action): number {
+      if (first.type === 'reroll' || first.type === 'keepRoll') {
+        const total = state.pending?.lastTotal ?? 0;
+        const t = profile.rerollBelow;
+        const doReroll = rerolls(profile, state);
+        const chosen = legal.findIndex((a) => a.type === (doReroll ? 'reroll' : 'keepRoll'));
+        const scores = legal.map((a) => (a.type === 'reroll' ? t : total));
+        const why = (i: number) => {
+          const isReroll = legal[i]!.type === 'reroll';
+          if (t === 0) return isReroll ? `Reroll: ${profile.name} never rerolls (threshold 0)` : `Keep ${total}: ${profile.name} never rerolls (threshold 0)`;
+          if (isReroll) return doReroll ? `Reroll: ${total} is below reroll threshold ${t}` : `Reroll: only done below ${t}, and ${total} is not`;
+          return doReroll ? `Keep ${total}: below reroll threshold ${t}, so rerolling instead` : `Keep ${total}: at or above reroll threshold ${t}`;
+        };
+        const note = t === 0 ? `${profile.name}: never rerolls` : `${profile.name}: rerolls when the total is below ${t}`;
+        return buildDecision(legal, scores, chosen, why, note);
+      }
+
+      if (legal.length === 1) return onlyOption(state, first);
+
+      const c = makeCtx(profile, state);
+      const parts: Parts[] = [];
+      const scores = legal.map((a) => {
+        const pr = newParts();
+        parts.push(pr);
+        return scoreAction(c, a, pr);
+      });
+      const chosen = pickBest(scores, rng);
+      const cfg = state.config;
+
+      const why = (i: number): string => {
+        const a = legal[i]!;
+        const pr = parts[i]!;
+        const label = shortLabel(state, a);
         switch (a.type) {
           case 'pass':
-            return profile.passWeight;
+            return i === chosen ? `Pass: nothing scores above ${num(pr.base)}` : `Pass: baseline ${num(pr.base)}`;
           case 'buyTile': {
-            const def = tileDef(state.config, state.shop[a.shopIndex]!);
-            let s = tagWeight(def);
-            if (profile.vpPerCoin && def.tags.includes('score')) s += (staticValue(def).vp / def.cost) * 4;
-            s += placementScore(state, me, a.slot, def, profile.placement, mass) * profile.placementWeight;
-            s -= def.cost * profile.costWeight;
-            const old = p.board[a.slot];
-            if (old != null) s -= tileDef(state.config, old).cost * profile.replaceWeight;
-            return s;
+            const def = tileDef(cfg, state.shop[a.shopIndex]!);
+            const bits = [`${pr.tagName ?? def.tags[0]} ${sgn(pr.tag)}`];
+            if (pr.vpc !== 0) bits.push(`VP per coin ${sgn(pr.vpc)}`);
+            if (pr.placeRaw > 0) {
+              if (profile.placement === 'likely') bits.push(`lands ${Math.round(pr.placeRaw * 100)}% in ${profile.lookRolls ?? 3} rolls ${sgn(pr.place)}`);
+              else {
+                const n = Math.round(pr.placeRaw * 2);
+                bits.push(`${n} adjacent ${profile.placement === 'adjacentScore' ? 'score' : 'combo'} ${n === 1 ? 'tile' : 'tiles'} ${sgn(pr.place)}`);
+              }
+            }
+            bits.push(`cost ${sgn(-pr.cost, 2)}`);
+            if (pr.replaced != null) bits.push(`replacing ${tileName(cfg, pr.replaced)} ${sgn(-pr.replace, 2)}`);
+            return `${label}: ${bits.join(', ')}`;
           }
           case 'buyExpansion': {
-            const def = tileDef(state.config, state.shop[a.shopIndex]!);
-            let s = tagWeight(def) - def.cost * profile.costWeight;
-            if (def.insertTile) s += 0.5;
-            return s;
+            const def = tileDef(cfg, state.shop[a.shopIndex]!);
+            const bits = [`${pr.tagName ?? def.tags[0]} ${sgn(pr.tag)}`];
+            if (pr.insert !== 0 && def.insertTile) bits.push(`comes with a ${tileName(cfg, def.insertTile)} ${sgn(pr.insert)}`);
+            bits.push(`cost ${sgn(-pr.cost, 2)}`);
+            return `${label}: ${bits.join(', ')}`;
           }
-          case 'buyMod': {
-            const cost = state.config.modSet.find((m) => m.id === a.modId)?.cost ?? 0;
-            if (p.coins - cost < profile.modReserve) return -Infinity;
-            return (profile.modWeights[a.modId] ?? -1) - cost * profile.costWeight;
-          }
+          case 'buyMod':
+            return `${modName(cfg, a.modId)}: mod weight ${fixed(pr.weight)}${pr.listed ? '' : ' (not in profile)'}, cost ${sgn(-pr.cost, 2)}`;
           case 'sellTile':
-            return profile.sellWeight;
+            return `${label}: ${num(pr.base)}`;
           default:
-            return 0;
+            return label;
         }
-      }
+      };
+
+      const late = state.round >= profile.switchRound;
+      let note = `${profile.name}: round ${state.round} ${late ? '≥' : '<'} switch round ${profile.switchRound}, using ${late ? 'late' : 'early'} weights (${weightList(c.weights)})`;
+      const blocked = parts.filter((x) => x.blocked).length;
+      if (blocked > 0) note += `; ${blocked} mod ${blocked === 1 ? 'purchase' : 'purchases'} skipped to keep a ${profile.modReserve}-coin reserve`;
+      const group = (i: number): string => {
+        const a = legal[i]!;
+        switch (a.type) {
+          case 'buyTile': case 'buyExpansion': return `tile:${state.shop[a.shopIndex]}`;
+          case 'buyMod': return `mod:${a.modId}`;
+          case 'sellTile': return `sell:${c.p.board[a.slot]}`;
+          default: return a.type;
+        }
+      };
+      return buildDecision(legal, scores, chosen, why, note, group);
     },
   };
 }

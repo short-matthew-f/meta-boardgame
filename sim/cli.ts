@@ -3,7 +3,8 @@
 //   npm run sim -- balance [--games N] [--seed S]
 //   npm run sim -- replay  --seed S [--lineup a,b,c,d] [--endMode m] [--endValue v]
 import { parseArgs } from 'node:util';
-import type { EndMode, Event } from '../engine/types.ts';
+import type { EndMode } from '../engine/types.ts';
+import { describeEvent } from '../engine/describe.ts';
 import { batch, DEFAULT_SPEC, placementValue, type BatchReport, type BatchSpec } from './batch.ts';
 import { pct } from './metrics.ts';
 import { playGame } from './runner.ts';
@@ -69,24 +70,6 @@ function printReport(r: BatchReport): void {
   for (const p of r.problems) console.log(`  - ${p}`);
 }
 
-function describe(e: Event): string {
-  switch (e.t) {
-    case 'rolled': return `P${e.player + 1} rolls [${e.dice.join(',')}] = ${e.total}`;
-    case 'moved': return `  P${e.player + 1} moves ${e.from} -> ${e.to}${e.passedStart ? ' (passes Start)' : ''}`;
-    case 'lap': return `  P${e.player + 1} completes lap ${e.laps}, +${e.income} coins`;
-    case 'tileFired': return `  P${e.player + 1} ${e.tile} fires (${e.trigger})`;
-    case 'resource': return `    P${e.player + 1} ${e.delta >= 0 ? '+' : ''}${e.delta} ${e.res} (${e.source})`;
-    case 'attacked': return `  P${e.attacker + 1} attacks P${e.target + 1} with ${e.tile}${e.cancelled ? ' — cancelled by shield' : ''}`;
-    case 'bought': return `  P${e.player + 1} buys ${e.item} for ${e.cost}${e.slot != null ? ` at slot ${e.slot}` : ''}`;
-    case 'sold': return `  P${e.player + 1} sells ${e.tile} for ${e.refund}`;
-    case 'expanded': return `  P${e.player + 1} board grows to ${e.size} slots (after ${e.afterSlot})`;
-    case 'locked': return `  P${e.player + 1}'s ${e.tile} at slot ${e.slot} locked by P${e.by + 1}`;
-    case 'shopRefilled': return `  shop: ${e.shop.join(', ')}`;
-    case 'roundEnded': return `-- round ${e.round}: ${e.standings.map((s) => `P${s.player + 1} ${s.vp}vp/${s.coins}c`).join('  ')}`;
-    case 'gameEnded': return `== game over (${e.reason}) after ${e.rounds} rounds: P${e.winner + 1} wins`;
-  }
-}
-
 if (command === 'batch') {
   const report = batch(specFromArgs());
   if (values.json) console.log(JSON.stringify(report, null, 2));
@@ -115,7 +98,7 @@ if (command === 'batch') {
   const names = seatOrder(spec.lineup, Math.max(0, i), spec.rotateSeats);
   const rec = playGame(spec.seedStart, names.map(botByName), config);
   console.log(`seed ${rec.seed} · seats: ${names.map((n, s) => `P${s + 1}=${n}`).join(' ')}`);
-  for (const e of rec.events) console.log(describe(e));
+  for (const e of rec.events) console.log(describeEvent(e));
 } else {
   console.error(`unknown command ${command}; use batch, balance or replay`);
   process.exit(1);

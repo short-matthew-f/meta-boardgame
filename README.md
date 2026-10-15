@@ -7,7 +7,7 @@ is the code the PWA will ship later; nothing here is throwaway.
 TypeScript, Node 20+, Vitest. No runtime dependencies.
 
 ```
-engine/     pure engine: types, seeded RNG, board helpers, step / legalActions
+engine/     pure engine: types, seeded RNG, board helpers, step / legalActions, describe (readable text)
 tiles/      starter tiles and die mods as JSON, plus a schema validator
 bots/       Random, Greedy, Scorer, Aggressor, Turtle, Expander (weight tables), Lookahead (one-ply EV)
 sim/        playGame / replay, batch runner with seat rotation, event-log metrics, CLI
@@ -48,6 +48,15 @@ about 15 s.
   over `GameRecord[]`; `flagProblems` applies the spec's thresholds.
 - **Bots** pick from the legal list. Archetypes are `Profile` weight tables in
   `bots/archetypes.ts`; `bots/lookahead.ts` is the one-ply reference.
+- **Bots explain themselves.** Every `Bot` has `choose` (the fast path the
+  batch sim uses) and `decide`, which returns the same action for the same
+  state, legal list and `Rng` state, plus a `Decision`: up to 6 `candidates`
+  sorted by score (chosen action first, each with a one-line `why` built from
+  the actual scoring terms) and an optional `note` on the strategy in force.
+  Both share one scoring function; strings are only built in `decide`, so the
+  batch speed is unchanged. `engine/describe.ts` is the shared, DOM-free text
+  layer for the UI: `describeAction`, `describeEvent` (also used by the CLI
+  replay), `describeEffects`, `describeTile` and `describeMod`.
 
 ## Rules as implemented
 
