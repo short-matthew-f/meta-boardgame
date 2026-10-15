@@ -8,18 +8,19 @@
 // of class C owned by O:
 //   civic     pass and land, beneficiary O
 //   private   only if M === O, pass and land (landing runs the list landBonus times)
-//   toll      only if M !== O and only on landing: O is paid by M
+//   toll      only if M !== O and only on landing: O is paid by M (config.tollOnPass > 0: a plain coin toll also
+//             charges a fraction when M passes it)
 //   public    only on landing: the visitor M benefits (the list runs twice if M === O)
 //   landmark  like private, landing once; passives are read by the engine
 // Tiles tagged `mover` never fire on a pass and run once on landing.
-import type { Action, Event, GameState, LandmarkDef, TileDef, Trigger } from './types.ts';
+import type { Action, Effect, Event, GameState, LandmarkDef, TileDef, Trigger } from './types.ts';
 import { rngInt } from './rng.ts';
 import { tileDef } from './board.ts';
 import {
-  type Ctx, type EffectCtx, changeResource, consumeFlag, getFlag, newEc, runEffects,
+  type Ctx, type EffectCtx, changeResource, consumeFlag, evalAmount, getFlag, newEc, runEffects,
 } from './effects.ts';
 import {
-  discountedCost, hasPassive, isCorner, itemCost, landmarkDef, nextCorner, ownedSharedCount, sharedSize,
+  buyoutPremium, discountedCost, replacementTax, hasPassive, isCorner, itemCost, landmarkDef, nextCorner, ownedSharedCount, sharedSize,
   sharedTileDef, sideOf,
 } from './sharedBoard.ts';
 
@@ -132,7 +133,9 @@ function fireSlot(ctx: Ctx, mover: number, slot: number, trigger: Trigger): void
       break;
     }
     case 'toll':
-      if (landing && mover !== owner) fireToll(ctx, def, mover, owner, slot);
+      if (mover === owner) break;
+      if (landing) fireToll(ctx, def, mover, owner, slot);
+      else if (cfg.tollOnPass > 0 && isPlainCoinToll(def)) firePassToll(ctx, def, mover, owner, slot);
       break;
     case 'public':
       if (landing) runList(ctx, def, owner, mover, slot, trigger, mover, mover === owner && !mover_ ? 2 : 1);
@@ -177,6 +180,45 @@ function fireToll(ctx: Ctx, def: TileDef, payer: number, owner: number, slot: nu
   if (ec.paid.vp > 0) toll.vp = ec.paid.vp;
 }
 
+/** A toll that can fire on a pass: its whole list is coin `pay`s with no `orElse` (Tollbooth, Bridge, Guard Post, Moneylender). Ferry, Inn, Tithe and Bandit Camp are landing-only. */
+export function isPlainCoinToll(def: TileDef): boolean {
+  const fx = def.effects;
+  return !!fx && fx.length > 0 && fx.every((e) => e.op === 'pay' && (e.res ?? 'coins') === 'coins' && !e.orElse);
+}
+
+/**
+ * config.tollOnPass: a visitor who passes a plain coin toll without landing pays floor(tollOnPass × pay)
+ * (at least 1 when the fraction and the pay are positive), the pay being the amount the landing would charge
+ * after its cap. tollFree (Harbour Master, or the flag, which is consumed) skips it like a landing.
+ */
+function firePassToll(ctx: Ctx, def: TileDef, payer: number, owner: number, slot: number): void {
+  const st = ctx.st;
+  const toll: Extract<Event, { t: 'toll' }> = { t: 'toll', payer, owner, tile: def.id, amount: 0, onPass: true };
+  if (hasPassive(st, payer, 'tollFree')) {
+    ctx.events.push(toll);
+    return;
+  }
+  if (getFlag(st, payer, 'tollFree') > 0) {
+    consumeFlag(st, payer, 'tollFree');
+    ctx.events.push(toll);
+    return;
+  }
+  ctx.events.push({ t: 'tileFired', player: payer, tile: def.id, trigger: 'onPass', owner, slot });
+  ctx.events.push(toll);
+  const ec = fireEc(owner, payer, owner, payer, slot, def.id);
+  ec.paid = { coins: 0, vp: 0 };
+  const scaled: Effect[] = [];
+  for (const e of def.effects!) {
+    if (e.op !== 'pay') continue;
+    let full = evalAmount(st, e.amount, ec);
+    if (e.cap != null) full = Math.min(full, e.cap);
+    const part = full > 0 ? Math.max(1, Math.floor(full * st.config.tollOnPass + 1e-9)) : 0;
+    scaled.push({ op: 'pay', amount: part });
+  }
+  runEffects(ctx, scaled, ec);
+  toll.amount = ec.paid.coins;
+}
+
 function fireLandmark(ctx: Ctx, mover: number, owner: number, slot: number, trigger: Trigger, lm: LandmarkDef): void {
   if (mover === owner) {
     ctx.events.push({ t: 'tileFired', player: mover, tile: lm.id, trigger, owner, slot });
@@ -215,12 +257,13 @@ export function sharedBuyActions(state: GameState): Action[] {
   }
   const out: Action[] = [];
   for (let i = 0; i < state.shop.length; i++) {
-    if (discountedCost(state, me, tileDef(state.config, state.shop[i]!).cost) > p.coins) continue;
-    for (const slot of buildable) out.push({ type: 'buyTile', shopIndex: i, slot });
+    const price = discountedCost(state, me, tileDef(state.config, state.shop[i]!).cost);
+    if (price > p.coins) continue;
+    for (const slot of buildable) if (price + buyoutPremium(state, me, slot) + replacementTax(state, me, slot) <= p.coins) out.push({ type: 'buyTile', shopIndex: i, slot });
   }
   for (const lm of state.config.landmarkSet) {
     if (lm.cost > p.coins || p.landmarks.includes(lm.id)) continue;
-    for (const slot of landmarkable) out.push({ type: 'buyLandmark', landmarkId: lm.id, slot });
+    for (const slot of landmarkable) if (lm.cost + replacementTax(state, me, slot) <= p.coins) out.push({ type: 'buyLandmark', landmarkId: lm.id, slot });
   }
   return out;
 }
@@ -239,7 +282,9 @@ export function sharedBuyTile(ctx: Ctx, shopIndex: number, slot: number): void {
   const st = ctx.st;
   const me = st.activePlayer;
   const id = st.shop[shopIndex]!;
-  const cost = discountedCost(st, me, tileDef(st.config, id).cost);
+  const tax = replacementTax(st, me, slot);
+  const cost = discountedCost(st, me, tileDef(st.config, id).cost) + buyoutPremium(st, me, slot) + tax;
+  if (tax > 0) st.players[me]!.replacements += 1;
   if (cost !== 0) changeResource(ctx, me, 'coins', -cost, id);
   st.shop.splice(shopIndex, 1);
   const s = st.shared!.slots[slot]!;
@@ -254,20 +299,23 @@ export function sharedBuyTile(ctx: Ctx, shopIndex: number, slot: number): void {
   }
   s.tile = id;
   s.owner = me;
-  ctx.events.push({ t: 'bought', player: me, item: id, cost, slot, ...(displaced != null ? { displaced } : {}) });
+  ctx.events.push({ t: 'bought', player: me, item: id, cost, slot, ...(displaced != null ? { displaced } : {}), ...(tax > 0 ? { tax } : {}) });
 }
 
 export function sharedBuyLandmark(ctx: Ctx, landmarkId: string, slot: number): void {
   const st = ctx.st;
   const me = st.activePlayer;
   const lm = landmarkDef(st.config, landmarkId)!;
-  if (lm.cost !== 0) changeResource(ctx, me, 'coins', -lm.cost, lm.id);
+  const tax = replacementTax(st, me, slot);
+  const cost = lm.cost + tax;
+  if (tax > 0) st.players[me]!.replacements += 1;
+  if (cost !== 0) changeResource(ctx, me, 'coins', -cost, lm.id);
   const s = st.shared!.slots[slot]!;
   if (s.tile != null) st.discard.push(s.tile);
   s.tile = lm.id;
   s.owner = me;
   st.players[me]!.landmarks.push(lm.id);
-  ctx.events.push({ t: 'bought', player: me, item: lm.id, cost: lm.cost, slot });
+  ctx.events.push({ t: 'bought', player: me, item: lm.id, cost, slot, ...(tax > 0 ? { tax } : {}) });
 }
 
 export function sharedSellTile(ctx: Ctx, slot: number): void {

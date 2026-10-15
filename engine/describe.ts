@@ -108,7 +108,7 @@ export function describeEvent(e: Event): string {
       return `  P${e.player + 1} ${e.tile} fires (${e.trigger})${e.owner != null ? `, P${e.owner + 1}'s at slot ${e.slot}` : ''}`;
     case 'toll': {
       const paid = [e.amount > 0 ? `${e.amount} coins` : '', e.vp ? `${e.vp} VP` : ''].filter(Boolean).join(' and ');
-      return `  P${e.payer + 1} ${paid ? `pays P${e.owner + 1} ${paid}` : `pays P${e.owner + 1} nothing`} at ${e.tile}`;
+      return `  P${e.payer + 1} ${paid ? `pays P${e.owner + 1} ${paid}` : `pays P${e.owner + 1} nothing`} at ${e.tile}${e.onPass ? ' (passing)' : ''}`;
     }
     case 'corner': return `  P${e.player + 1} reaches ${e.own ? 'their own' : 'another'} corner, +${e.income} coins`;
     case 'resource': return `    P${e.player + 1} ${e.delta >= 0 ? '+' : ''}${e.delta} ${e.res} (${e.source})`;

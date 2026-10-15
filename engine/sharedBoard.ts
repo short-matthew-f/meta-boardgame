@@ -175,3 +175,15 @@ export function discountedCost(st: GameState, player: number, cost: number): num
   if (!st.shared) return cost;
   return Math.max(0, cost - passiveSum(st, player, 'shopDiscount'));
 }
+
+/** config.replacementTax for the player's next replacement if `slot` is occupied (flat, or tax × (replacements so far + 1) when it escalates), else 0. */
+export function replacementTax(st: GameState, me: number, slot: number): number {
+  if (!(st.config.replacementTax > 0) || st.shared!.slots[slot]!.tile == null) return 0;
+  return st.config.replacementTaxEscalates ? st.config.replacementTax * (st.players[me]!.replacements + 1) : st.config.replacementTax;
+}
+
+/** config.buyoutPremium if `slot` holds another player's tile (the extra a buyout costs on top of the shop price), else 0. */
+export function buyoutPremium(st: GameState, me: number, slot: number): number {
+  const s = st.shared!.slots[slot]!;
+  return s.tile != null && s.owner != null && s.owner !== me ? st.config.buyoutPremium : 0;
+}

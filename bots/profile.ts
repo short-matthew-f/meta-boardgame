@@ -3,7 +3,7 @@
 import type { Action, Effect, GameState, PlayerState, Tag, TileClass, TileDef } from '../engine/types.ts';
 import { countAdjacentWithTag, effectiveDice, landingMass, tileDef } from '../engine/board.ts';
 import { itemName, modName, tileName } from '../engine/describe.ts';
-import { discountedCost, itemCost, landmarkDef } from '../engine/sharedBoard.ts';
+import { buyoutPremium, discountedCost, itemCost, landmarkDef, replacementTax } from '../engine/sharedBoard.ts';
 import { trafficMaps, type TrafficMaps } from '../engine/traffic.ts';
 import type { Bot, Decision } from './types.ts';
 import { buildDecision, fixed, num, onlyOption, pickBest, sgn, shortLabel } from './explain.ts';
@@ -234,9 +234,9 @@ function scoreSharedBuy(c: ScoreCtx, a: Extract<Action, { type: 'buyTile' }>, pa
     parts.sp = sharedPlacement(c.traffic(), state, cls, a.slot, c.place);
     s += parts.place = parts.sp.value;
   }
-  const price = discountedCost(state, me, def.cost);
-  s -= parts.cost = price * profile.costWeight;
   const there = state.shared!.slots[a.slot]!;
+  const price = discountedCost(state, me, def.cost) + buyoutPremium(state, me, a.slot) + replacementTax(state, me, a.slot);
+  s -= parts.cost = price * profile.costWeight;
   parts.replaced = there.tile ?? null;
   if (there.tile != null) {
     const old = itemCost(state.config, there.tile);
@@ -263,7 +263,7 @@ function scoreLandmark(c: ScoreCtx, a: Extract<Action, { type: 'buyLandmark' }>,
     parts.sp = sharedPlacement(c.traffic(), state, 'landmark', a.slot, c.place);
     s += parts.place = parts.sp.value;
   }
-  s -= parts.cost = lm.cost * profile.costWeight;
+  s -= parts.cost = (lm.cost + replacementTax(state, c.me, a.slot)) * profile.costWeight;
   const there = state.shared!.slots[a.slot]!;
   parts.replaced = there.tile ?? null;
   if (there.tile != null) s -= parts.replace = itemCost(state.config, there.tile) * profile.replaceWeight;

@@ -26,12 +26,17 @@ export function standings(st: GameState): Standing[] {
   return st.players.map((p) => ({ player: p.id, vp: p.vp, coins: p.coins }));
 }
 
-/** Highest VP wins; ties break on coins, then on fewer tiles, then lower seat. */
+/**
+ * Highest VP wins; ties break on coins, then on fewer tiles, then lower seat.
+ * In the landmarkRace end mode the landmarks owned come first, then VP and the usual tie-breaks.
+ */
 export function rankPlayers(st: GameState): number[] {
+  const byLandmarks = (st.config.endMode as SimEndMode) === 'landmarkRace';
   return st.players
     .map((p) => p.id)
     .sort((a, b) => {
       const pa = st.players[a]!, pb = st.players[b]!;
+      if (byLandmarks && pb.landmarks.length !== pa.landmarks.length) return pb.landmarks.length - pa.landmarks.length;
       if (pb.vp !== pa.vp) return pb.vp - pa.vp;
       if (pb.coins !== pa.coins) return pb.coins - pa.coins;
       const ta = ownedCount(st, a), tb = ownedCount(st, b);

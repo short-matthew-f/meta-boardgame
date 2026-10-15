@@ -25,8 +25,13 @@ export type Metrics = {
   attacks: { perGame: number; cancelledRate: number; attackerLift: number; targetLift: number };
   randomFloor: number | null;
   /** Shared-board mode only (absent in loops mode so its report is unchanged). Per game. */
+  /** Toll events at landings per game (free and skipped ones included); pass tolls (config.tollOnPass) are counted apart. */
   tollsPerGame?: number;
+  /** Coins paid in tolls per game, landing and pass tolls together. */
   tollCoinsPerGame?: number;
+  /** Pass tolls (config.tollOnPass) per game and the coins they paid; 0 when the option is off. */
+  passTollsPerGame?: number;
+  passTollCoinsPerGame?: number;
   cornerIncomePerGame?: number;
   /** Shared mode: tileFired events per game by tile class (civic, private, toll, public) and 'landmark'. */
   firesByClass?: Record<string, number>;
@@ -201,7 +206,7 @@ export function computeMetrics(records: GameRecord[], config: GameConfig, opts: 
   const vpAttackers: number[] = [], vpNonAttackers: number[] = [], vpTargets: number[] = [], vpNonTargets: number[] = [];
   const lopsided: Metrics['lopsided'] = [];
   const shared = config.boardMode === 'shared';
-  let tollCount = 0, tollCoins = 0, cornerIncome = 0;
+  let tollCount = 0, tollCoins = 0, cornerIncome = 0, passTollCount = 0, passTollCoins = 0;
   const fires: Record<string, number> = { civic: 0, private: 0, toll: 0, public: 0, landmark: 0 };
   const classOf = new Map<string, string>([
     ...config.tileSet.map((t) => [t.id, t.class ?? ''] as [string, string]),
@@ -271,7 +276,7 @@ export function computeMetrics(records: GameRecord[], config: GameConfig, opts: 
     const attacked = new Set<number>();
     const attackers = new Set<number>();
     let shop: string[] = [];
-    const coins = Array.from({ length: players }, () => config.startCoins);
+    const coins = Array.from({ length: players }, (_, i) => config.startCoins + i * (config.catchUpCoins ?? 0));
     let turn: { player: number; shop: string[] } | null = null;
     // An offer is a tile copy on display during a shop phase that the player could afford.
     const finalizeTurn = (coinsNow: number) => {
@@ -302,7 +307,8 @@ export function computeMetrics(records: GameRecord[], config: GameConfig, opts: 
       } else if (e.t === 'sold') {
         if (tiles[e.tile]) tiles[e.tile]!.sells++;
       } else if (e.t === 'toll') {
-        tollCount++;
+        if (e.onPass) { passTollCount++; passTollCoins += e.amount; }
+        else tollCount++;
         tollCoins += e.amount;
       } else if (e.t === 'corner') {
         cornerIncome += e.income;
@@ -368,6 +374,8 @@ export function computeMetrics(records: GameRecord[], config: GameConfig, opts: 
     ...(shared ? {
       tollsPerGame: games ? tollCount / games : 0,
       tollCoinsPerGame: games ? tollCoins / games : 0,
+      passTollsPerGame: games ? passTollCount / games : 0,
+      passTollCoinsPerGame: games ? passTollCoins / games : 0,
       cornerIncomePerGame: games ? cornerIncome / games : 0,
       firesByClass: Object.fromEntries(Object.entries(fires).map(([k, v]) => [k, games ? v / games : 0])),
     } : {}),

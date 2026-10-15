@@ -8,7 +8,7 @@ import type { Action, GameState, PlayerState } from '../engine/types.ts';
 import type { Rng } from '../engine/rng.ts';
 import { legalActions, previewRoll, step } from '../engine/engine.ts';
 import { diceOutcomes, effectiveDice, landingDistribution, ownedCost, tileDef } from '../engine/board.ts';
-import { itemCost, landmarkDef, sharedSize } from '../engine/sharedBoard.ts';
+import { itemCost, landmarkDef, replacementTax, sharedSize } from '../engine/sharedBoard.ts';
 import { trafficMaps } from '../engine/traffic.ts';
 import type { Bot, Decision } from './types.ts';
 import { buildDecision, onlyOption, pickBest, sgn, shortLabel } from './explain.ts';
@@ -104,9 +104,9 @@ function sharedShopCandidates(state: GameState, legal: Action[]): Action[] {
       if (there.tile == null) {
         h += 0.001;
       } else if (there.owner === me) {
-        h -= REPLACE_WEIGHT * itemCost(cfg, there.tile);
+        h -= REPLACE_WEIGHT * itemCost(cfg, there.tile) + 0.15 * replacementTax(state, me, a.slot);
       } else {
-        h += (state.players[there.owner!]!.vp - state.players[me]!.vp) * SHARED_DEFAULTS.leaderCheckWeight - SHARED_DEFAULTS.buyoutWeight * itemCost(cfg, there.tile);
+        h += (state.players[there.owner!]!.vp - state.players[me]!.vp) * SHARED_DEFAULTS.leaderCheckWeight - SHARED_DEFAULTS.buyoutWeight * itemCost(cfg, there.tile) - 0.15 * (cfg.buyoutPremium + replacementTax(state, me, a.slot));
         buyouts.push({ a, h });
         continue;
       }

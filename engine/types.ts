@@ -143,6 +143,25 @@ export type GameConfig = {
   boardMode: BoardMode;
   /** Shared mode: slots per side (one corner plus tile slots); the board has players × sideLength slots. */
   sideLength: number;
+  /**
+   * Shared mode: total slots on the loop. When set, `sideLength = perimeter / players` (must divide exactly,
+   * createGame throws otherwise) and wins over `sideLength`. Unset: the board has `players × sideLength` slots.
+   */
+  perimeter?: number;
+  /** Both board modes: seat i starts with `startCoins + i × catchUpCoins`. */
+  catchUpCoins: number;
+  /**
+   * Shared mode: fraction of a coin toll's `pay` charged when a visitor passes the toll without landing
+   * (floor, at least 1 when the fraction and the amount are positive). Landing is unchanged. Only tolls whose
+   * whole effect list is plain coin `pay`s (no orElse, no teleport, no VP) fire on a pass.
+   */
+  tollOnPass: number;
+  /** Shared mode: coins paid to the bank (refunded to nobody) when building over any occupied non-corner slot, own tile or another player's, on top of the price and any buyoutPremium. Landmarks built over an own tile pay it too. */
+  replacementTax: number;
+  /** Shared mode: the tax for a player's k-th replacement this game is replacementTax × k. */
+  replacementTaxEscalates: boolean;
+  /** Shared mode: extra coins paid on top of the shop price when building over another player's tile. The displaced owner's refund is unchanged. */
+  buyoutPremium: number;
   /** Shared mode: coins for passing or landing on a corner; double on your own. */
   cornerIncome: number;
   /** The dice every player starts with. */
@@ -197,6 +216,8 @@ export type PlayerState = {
   cornersPassed: number;
   /** Shared mode: landmarks bought. */
   landmarks: LandmarkId[];
+  /** Shared mode: times this player has built over an occupied slot (drives an escalating replacementTax). */
+  replacements: number;
   dice: DieSpec[];
   mods: ModId[];
   flags: Record<string, number>;
@@ -267,12 +288,12 @@ export type Event =
   | { t: 'tileFired'; player: number; tile: TileId; trigger: Trigger; owner?: number; slot?: number }
   | { t: 'resource'; player: number; res: Resource; delta: number; source: TileId | ModId | 'lap' | 'sale' | 'endgame' | 'buyout' | 'corner' }
   | { t: 'attacked'; attacker: number; target: number; tile: TileId; cancelled: boolean }
-  /** `displaced` (shared mode): the player whose tile was bought out. */
-  | { t: 'bought'; player: number; item: TileId | ModId | LandmarkId; cost: number; slot?: number; displaced?: number }
+  /** `displaced` (shared mode): the player whose tile was bought out. `cost` is everything paid (price, buyoutPremium and `tax`); `tax` is the replacementTax part, present when it was charged. */
+  | { t: 'bought'; player: number; item: TileId | ModId | LandmarkId; cost: number; slot?: number; displaced?: number; tax?: number }
   | { t: 'sold'; player: number; tile: TileId; refund: number }
   | { t: 'expanded'; player: number; afterSlot: number; size: number }
-  /** Shared mode. `amount` is the coins actually paid (0 if skipped); `vp` is set when VP changed hands. */
-  | { t: 'toll'; payer: number; owner: number; tile: TileId; amount: number; vp?: number }
+  /** Shared mode. `amount` is the coins actually paid (0 if skipped); `vp` is set when VP changed hands; `onPass` marks a pass toll (config.tollOnPass). */
+  | { t: 'toll'; payer: number; owner: number; tile: TileId; amount: number; vp?: number; onPass?: true }
   | { t: 'corner'; player: number; own: boolean; income: number }
   | { t: 'locked'; player: number; slot: number; tile: TileId; by: number }
   | { t: 'shopRefilled'; shop: TileId[] }

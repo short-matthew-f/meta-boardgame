@@ -30,6 +30,11 @@ export const BASE_CONFIG: Omit<GameConfig, 'tileSet' | 'modSet'> = {
   boardSize: 8,
   boardMode: 'loops',
   sideLength: 10,
+  catchUpCoins: 0,
+  tollOnPass: 0,
+  buyoutPremium: 0,
+  replacementTax: 0,
+  replacementTaxEscalates: false,
   cornerIncome: 2,
   startDice: [{ sides: 6 }],
   buyoutRefund: 0.5,
@@ -56,7 +61,35 @@ export const VP_POOL_MODE = 'vpPool' as EndMode;
 export const LANDMARK_RACE_MODE = 'landmarkRace' as EndMode;
 
 export function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
-  return { ...BASE_CONFIG, tileSet: [], modSet: [], ...overrides };
+  return resolvePerimeter({ ...BASE_CONFIG, tileSet: [], modSet: [], ...overrides });
+}
+
+/**
+ * Shared mode with `perimeter` set: `sideLength = perimeter / players`. Returns the config unchanged when
+ * there is nothing to resolve or it does not divide (createGame throws in that case).
+ */
+export function resolvePerimeter(config: GameConfig): GameConfig {
+  const per = config.perimeter;
+  if (per == null || config.boardMode !== 'shared') return config;
+  const side = per / config.players;
+  if (!Number.isInteger(side) || side === config.sideLength) return config;
+  return { ...config, sideLength: side };
+}
+
+/** Throws on option values the engine cannot play. */
+function validateConfig(config: GameConfig): void {
+  if (config.players < 2) throw new Error('need at least 2 players');
+  const num = (name: string, v: number, min: number, max = Infinity) => {
+    if (!Number.isFinite(v) || v < min || v > max) throw new Error(`${name} must be a number from ${min}${max < Infinity ? ` to ${max}` : ''}, got ${v}`);
+  };
+  num('catchUpCoins', config.catchUpCoins, 0);
+  num('tollOnPass', config.tollOnPass, 0, 1);
+  num('buyoutPremium', config.buyoutPremium, 0);
+  num('replacementTax', config.replacementTax, 0);
+  if (config.perimeter != null && config.boardMode === 'shared') {
+    const side = config.perimeter / config.players;
+    if (!Number.isInteger(side)) throw new Error(`perimeter ${config.perimeter} does not divide by ${config.players} players`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -66,8 +99,9 @@ function freshRollContext(): RollContext {
   return { queue: [], choice: null, rollAgain: false, lastTotal: 0, chain: 0 };
 }
 
-export function createGame(config: GameConfig, seed: number): GameState {
-  if (config.players < 2) throw new Error('need at least 2 players');
+export function createGame(input: GameConfig, seed: number): GameState {
+  validateConfig(input);
+  const config = resolvePerimeter(input);
   let rng = seedToState(seed);
   const bagIds: TileId[] = [];
   for (const t of config.tileSet) for (let i = 0; i < t.copies; i++) bagIds.push(t.id);
@@ -82,11 +116,12 @@ export function createGame(config: GameConfig, seed: number): GameState {
       id: i,
       board: shared ? [] : new Array<TileId | null>(config.boardSize).fill(null),
       position: shared ? i * config.sideLength : 0, // shared mode: each token starts on its own corner
-      coins: config.startCoins,
+      coins: config.startCoins + i * config.catchUpCoins,
       vp: 0,
       laps: 0,
       cornersPassed: 0,
       landmarks: [],
+      replacements: 0,
       dice: config.startDice.map((d) => ({ ...d })),
       mods: [],
       flags: {},

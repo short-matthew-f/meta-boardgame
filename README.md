@@ -43,6 +43,8 @@ node --import tsx sim/experiments/density.ts   # the variant experiment (about 1
 npm run sim -- batch --board shared --lineup random,random,random,random   # shared board mode (see below)
 npm run sim -- batch --board shared --sideLength 8 --dice 2d6 --endMode landmarkRace --endValue 3
 node --import tsx sim/experiments/shared.ts   # shared board versus loops, ten cells (see sim/experiments/shared-results.md)
+node --import tsx sim/experiments/perimeter.ts   # fixed-perimeter shared board and its variant options (sim/experiments/perimeter-results.md)
+npm run sim -- batch --board shared --perimeter 24 --catchUp 1 --tollOnPass 0.5 --buyoutPremium 2 --replacementTax 2 --replacementTaxEscalates
 npm run sim -- batch --board shared --lineup greedy,scorer,landlord,builder   # the shared-board archetypes
 npm run sim -- batch --extended    # loops mode with interaction index and progression (always on in shared mode)
 npm run sim -- replay --seed 943   # print one game's event log
@@ -204,7 +206,17 @@ ready config with `defaultSharedConfig(overrides)` from `tiles/index.ts`.
   engine-online round), `landmarksPerGame`, `landmarkBuyRate` and
   `buyoutsPerGame`. Loops reports gain none of them unless asked
   (`--extended` / `computeMetrics(..., { extended: true })`).
-- **Experiment.** `sim/experiments/shared.ts` runs shared versus loops in ten
+- **Variant options** (all off by default, shared mode unless noted; CLI flag in brackets):
+  `perimeter` (`--perimeter N`, total slots, `sideLength = perimeter / players`, must divide),
+  `catchUpCoins` (`--catchUp N`, seat i starts with `i × N` extra coins, both modes),
+  `tollOnPass` (`--tollOnPass X`, a visitor passing a plain coin toll pays `floor(X × pay)`, at least 1;
+  Ferry, Inn, Tithe and Bandit Camp only fire on a landing), `buyoutPremium` (`--buyoutPremium N`, extra
+  price for building over another player's tile; the refund is unchanged), `replacementTax`
+  (`--replacementTax N`, paid to the bank for building over any occupied slot; `--replacementTaxEscalates`
+  makes the k-th replacement cost `N × k`). In the `landmarkRace` end mode the winner is ranked by
+  landmarks owned first, then VP. Decisions in `DECISIONS.md` ("Shared board variants").
+- **Experiment.** `sim/experiments/perimeter.ts` runs 17 cells of those options (about 4 minutes;
+  `--write` fills `sim/experiments/perimeter-results.md`). `sim/experiments/shared.ts` runs shared versus loops in ten
   cells (die size, players, end modes, corner income, own-side protection) with
   the standard, shared and lookahead lineups; numbers in
   `sim/experiments/shared-results.md`.

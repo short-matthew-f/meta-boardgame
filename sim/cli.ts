@@ -4,6 +4,7 @@
 //                          endMode is turnCap, vpRace, lapRace, vpPool (endValue = total VP pool) or landmarkRace (endValue = landmarks needed)
 //                          [--extended]   (loops mode: also report interaction index and progression; always on in shared mode)
 //                          [--board loops|shared] [--sideLength N] [--dice 2d6]   (shared board: one loop for everyone, owned tiles; --dice applies to both modes)
+//                          [--perimeter N] [--catchUp N] [--tollOnPass X] [--buyoutPremium N] [--replacementTax N] [--replacementTaxEscalates]   (shared board: total slots, seat i starts with i x N extra coins [both modes], fraction of a coin toll charged on a pass, extra price of a buyout, bank tax on building over any occupied slot [times the k-th replacement when escalating])
 //   npm run sim -- balance [--games N] [--seed S]
 //   npm run sim -- replay  --seed S [--lineup a,b,c,d] [--endMode m] [--endValue v]
 import { parseArgs } from 'node:util';
@@ -35,6 +36,12 @@ const { values, positionals } = parseArgs({
     board: { type: 'string' },
     sideLength: { type: 'string' },
     dice: { type: 'string' },
+    perimeter: { type: 'string' },
+    catchUp: { type: 'string' },
+    tollOnPass: { type: 'string' },
+    buyoutPremium: { type: 'string' },
+    replacementTax: { type: 'string' },
+    replacementTaxEscalates: { type: 'boolean' },
   },
 });
 
@@ -62,6 +69,12 @@ function specFromArgs(): Partial<BatchSpec> {
     spec.config!.boardMode = values.board;
   }
   if (values.sideLength) spec.config!.sideLength = Number(values.sideLength);
+  if (values.perimeter) spec.config!.perimeter = Number(values.perimeter);
+  if (values.catchUp) spec.config!.catchUpCoins = Number(values.catchUp);
+  if (values.tollOnPass) spec.config!.tollOnPass = Number(values.tollOnPass);
+  if (values.buyoutPremium) spec.config!.buyoutPremium = Number(values.buyoutPremium);
+  if (values.replacementTax) spec.config!.replacementTax = Number(values.replacementTax);
+  if (values.replacementTaxEscalates) spec.config!.replacementTaxEscalates = true;
   if (values.dice) spec.config!.startDice = parseDice(values.dice);
   return spec;
 }
@@ -84,7 +97,7 @@ function printReport(r: BatchReport): void {
   console.log(`\nGame length: mean ${g.mean.toFixed(1)}  p10 ${g.p10}  p50 ${g.p50}  p90 ${g.p90}  min ${g.min}  max ${g.max}  · ended by ${Object.entries(g.byReason).map(([k, v]) => `${k}=${v}`).join(' ')}`);
   console.log(`Decided by: median round ${m.decidedBy.medianRound} (${pct(m.decidedBy.medianFraction)} of game length)`);
   if (m.firesByClass) {
-    console.log(`Tolls: ${m.tollsPerGame!.toFixed(2)} per game, ${m.tollCoinsPerGame!.toFixed(2)} coins paid per game · corner income ${m.cornerIncomePerGame!.toFixed(1)} coins per game`);
+    console.log(`Tolls: ${m.tollsPerGame!.toFixed(2)} per game${m.passTollsPerGame ? ` plus ${m.passTollsPerGame.toFixed(2)} pass tolls` : ''}, ${m.tollCoinsPerGame!.toFixed(2)} coins paid per game · corner income ${m.cornerIncomePerGame!.toFixed(1)} coins per game`);
     console.log(`Fires per game by class: ${Object.entries(m.firesByClass).map(([k, v]) => `${k} ${v.toFixed(1)}`).join('  ')}`);
   } else {
     console.log(`Attacks: ${m.attacks.perGame.toFixed(2)} per game, ${pct(m.attacks.cancelledRate)} cancelled, attacker lift ${m.attacks.attackerLift.toFixed(1)} VP, target lift ${m.attacks.targetLift.toFixed(1)} VP`);
