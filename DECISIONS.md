@@ -27,6 +27,26 @@ added and what the sim found.
 | Lookahead score | `vp + 0.5 × coins + 0.45 × cost of owned tiles`, differential against the leader | The spec's `vp + 0.5 × coins` over one roll never justifies buying a tile; with the asset term Lookahead beats Random 94% and matches Scorer. |
 | Tile buy rate | Reported as take rate: buys ÷ affordable offers | "Bought events ÷ games" cannot be compared with a 5%/80% threshold once the shop always has tiles; take rate when affordable is what "dead" and "auto-buy" mean. |
 
+## Web UI
+
+Choices the UI had to make; none of them changes a rule.
+
+| Topic | Decision | Reasoning |
+| --- | --- | --- |
+| Rules in the UI | None. Every action offered is looked up in `legalActions(state)` by `actionKey`; every display change comes from an engine event | A UI that reimplements a rule drifts from the engine. The display model is also rebuilt from the true post-step state after each step. |
+| Bot decisions | The loop calls `bot.decide()` with the same `Rng` the batch runner uses | Per the `Bot` contract it picks the same action as `choose`, so an all-bot game in the UI equals `playGame(seed, ...)`; a test asserts it. |
+| Replay | `(seed, actions)` replays a UI game, humans included | The loop records every action like `sim/runner.ts`. The seed field plus the same seats reproduces a bot game exactly; a human game needs the same clicks. |
+| Seat switching | A seat flag read at each decision. Take over applies from the seat's next decision; Hand back while the seat is being asked cancels the wait and the bot decides at once | "Next decision" for a seat that is waiting on a human is the one it is waiting on. A seat that started as Human hands back to Lookahead (the strongest general bot). |
+| Which board is large | Always the active player's, including while choosing a target or when a human acts | The user reads one board at a time; targets are chosen on the small boards. |
+| Events that carry no slot | `tileFired` has no slot, so the glow uses the token's slot for `onLand`, passed slots for `onPass`, else the n-th matching tile; `sold` finds its slot from the action or a board diff | Keeps the engine's event shape as is. Only the animation depends on it, and the final render is from state. |
+| Token movement | Forward moves of the active player hop slot by slot (a long move is squeezed to 3 s); forced pushes and teleports slide. A teleport is recognised from the tile that just fired | A teleport and a forward move both emit `moved`. |
+| Silent changes | Lock expiry and a spent Reroll token have no event, so they show up in the final re-render | Cheaper than adding events for display. |
+| Pause and Step | Pause holds at the next animation beat (the one in flight finishes); Step lets one beat through while paused; Instant resolves any wait in progress | One beat is a dice tumble, a hop, a glow, a thinking pause and so on. |
+| Small boards | Name code (e.g. TRE, BC) and cost only, tooltips carry the full text | At 150 to 250 px a full name cannot be 12 px. The large board never goes below 12 px at 1280 wide with up to 12 slots. |
+| Seed | Random 1 to 999999 shown in an editable field; the bot RNG is `seed + 0x5eed` as in the sim | Same seed, same seats, same game. |
+| Hosting | Relative asset paths, deploy only from the default branch, `dist/` is not committed | Pages serves under `/meta-boardgame/`. |
+| Decision lists | Candidates are deduplicated by their short label (`bots/explain.ts`) | Two shop copies of one tile gave identical lines. |
+
 ## Balance log
 
 Standard lineup (Greedy, Scorer, Aggressor, Turtle), 4 players, 1000 games per

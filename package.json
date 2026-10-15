@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Board Game Builder: headless game engine and batch simulator",
+  "description": "Board Game Builder: game engine, batch simulator and browser UI",
   "engines": {
     "node": ">=20"
   },
@@ -11,10 +11,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "sim": "node --import tsx sim/cli.ts"
+    "sim": "node --import tsx sim/cli.ts",
+    "build:web": "node web/build.mjs",
+    "dev:web": "node web/build.mjs --serve"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"

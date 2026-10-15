@@ -10,7 +10,21 @@
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ]
   },
-  "include": ["engine", "tiles", "bots", "sim", "tests"]
+  "include": [
+    "engine",
+    "tiles",
+    "bots",
+    "sim",
+    "tests",
+    "web"
+  ]
 }
