@@ -1,9 +1,12 @@
 // Small CLI over the batch runner. No framework.
 //   npm run sim -- batch   [--games N] [--seed S] [--lineup a,b,c,d] [--endMode m] [--endValue v] [--no-rotate] [--json]
+//                          [--fireOnPass] [--landBonus N] [--tileEndVp X] [--tiles superlinear]   (experimental variants, off by default)
+//                          endMode is turnCap, vpRace, lapRace or vpPool (endValue = total VP pool)
 //   npm run sim -- balance [--games N] [--seed S]
 //   npm run sim -- replay  --seed S [--lineup a,b,c,d] [--endMode m] [--endValue v]
 import { parseArgs } from 'node:util';
 import type { EndMode } from '../engine/types.ts';
+import { SUPERLINEAR_TILES } from '../tiles/index.ts';
 import { describeEvent } from '../engine/describe.ts';
 import { batch, DEFAULT_SPEC, placementValue, type BatchReport, type BatchSpec } from './batch.ts';
 import { pct } from './metrics.ts';
@@ -19,6 +22,10 @@ const { values, positionals } = parseArgs({
     lineup: { type: 'string' },
     endMode: { type: 'string' },
     endValue: { type: 'string' },
+    fireOnPass: { type: 'boolean' },
+    landBonus: { type: 'string' },
+    tileEndVp: { type: 'string' },
+    tiles: { type: 'string' },
     'no-rotate': { type: 'boolean' },
     json: { type: 'boolean' },
     players: { type: 'string' },
@@ -35,6 +42,14 @@ function specFromArgs(): Partial<BatchSpec> {
   if (values['no-rotate']) spec.rotateSeats = false;
   if (values.endMode) spec.config!.endMode = values.endMode as EndMode;
   if (values.endValue) spec.config!.endValue = Number(values.endValue);
+  if (values.fireOnPass) spec.config!.fireOnPass = true;
+  if (values.landBonus) spec.config!.landBonus = Number(values.landBonus);
+  if (values.tileEndVp) spec.config!.tileEndVp = Number(values.tileEndVp);
+  if (values.tiles) {
+    if (values.tiles !== 'superlinear' && values.tiles !== 'starter') throw new Error(`unknown --tiles ${values.tiles}; use starter or superlinear`);
+    if (values.tiles === 'superlinear') spec.config!.tileSet = SUPERLINEAR_TILES;
+  }
+  if (values.endMode && !['turnCap', 'vpRace', 'lapRace', 'vpPool'].includes(values.endMode)) throw new Error(`unknown --endMode ${values.endMode}`);
   return spec;
 }
 

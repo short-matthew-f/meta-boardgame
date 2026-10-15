@@ -1,0 +1,419 @@
+{
+  "spec": {
+    "games": 50,
+    "seedStart": 1,
+    "lineup": [
+      "greedy",
+      "scorer",
+      "aggressor",
+      "turtle"
+    ],
+    "rotateSeats": true,
+    "config": {}
+  },
+  "config": {
+    "players": 4,
+    "endMode": "turnCap",
+    "endValue": 15
+  },
+  "metrics": {
+    "games": 50,
+    "players": 4,
+    "winRateByBot": {
+      "greedy": {
+        "games": 50,
+        "wins": 17,
+        "rate": 0.34
+      },
+      "scorer": {
+        "games": 50,
+        "wins": 26,
+        "rate": 0.52
+      },
+      "aggressor": {
+        "games": 50,
+        "wins": 4,
+        "rate": 0.08
+      },
+      "turtle": {
+        "games": 50,
+        "wins": 3,
+        "rate": 0.06
+      }
+    },
+    "winRateBySeat": [
+      {
+        "games": 50,
+        "wins": 7,
+        "rate": 0.14
+      },
+      {
+        "games": 50,
+        "wins": 13,
+        "rate": 0.26
+      },
+      {
+        "games": 50,
+        "wins": 13,
+        "rate": 0.26
+      },
+      {
+        "games": 50,
+        "wins": 17,
+        "rate": 0.34
+      }
+    ],
+    "gameLength": {
+      "mean": 15,
+      "p10": 15,
+      "p50": 15,
+      "p90": 15,
+      "min": 15,
+      "max": 15,
+      "byReason": {
+        "turnCap": 50
+      }
+    },
+    "decidedBy": {
+      "medianRound": 11,
+      "medianFraction": 0.7333333333333333
+    },
+    "tiles": {
+      "market": {
+        "buys": 171,
+        "offers": 245,
+        "takeRate": 0.6979591836734694,
+        "buyRate": 0.98,
+        "ownerGames": 117,
+        "ownerWinRate": 0.2564102564102564,
+        "lift": 0.6410256410256387,
+        "sells": 0
+      },
+      "mine": {
+        "buys": 110,
+        "offers": 293,
+        "takeRate": 0.37542662116040953,
+        "buyRate": 0.96,
+        "ownerGames": 87,
+        "ownerWinRate": 0.27586206896551724,
+        "lift": 2.5862068965517238,
+        "sells": 0
+      },
+      "tollbooth": {
+        "buys": 24,
+        "offers": 250,
+        "takeRate": 0.096,
+        "buyRate": 0.46,
+        "ownerGames": 24,
+        "ownerWinRate": 0.125,
+        "lift": -12.5,
+        "sells": 0
+      },
+      "bank": {
+        "buys": 9,
+        "offers": 96,
+        "takeRate": 0.09375,
+        "buyRate": 0.18,
+        "ownerGames": 9,
+        "ownerWinRate": 0.6666666666666666,
+        "lift": 41.666666666666664,
+        "sells": 0
+      },
+      "shrine": {
+        "buys": 161,
+        "offers": 221,
+        "takeRate": 0.7285067873303167,
+        "buyRate": 1,
+        "ownerGames": 121,
+        "ownerWinRate": 0.32231404958677684,
+        "lift": 7.231404958677684,
+        "sells": 0
+      },
+      "monument": {
+        "buys": 91,
+        "offers": 171,
+        "takeRate": 0.5321637426900585,
+        "buyRate": 0.92,
+        "ownerGames": 81,
+        "ownerWinRate": 0.37037037037037035,
+        "lift": 12.037037037037035,
+        "sells": 0
+      },
+      "cathedral": {
+        "buys": 4,
+        "offers": 11,
+        "takeRate": 0.36363636363636365,
+        "buyRate": 0.08,
+        "ownerGames": 4,
+        "ownerWinRate": 0.5,
+        "lift": 25,
+        "sells": 0
+      },
+      "archive": {
+        "buys": 16,
+        "offers": 40,
+        "takeRate": 0.4,
+        "buyRate": 0.32,
+        "ownerGames": 16,
+        "ownerWinRate": 0.75,
+        "lift": 50,
+        "sells": 0
+      },
+      "springboard": {
+        "buys": 101,
+        "offers": 157,
+        "takeRate": 0.643312101910828,
+        "buyRate": 0.96,
+        "ownerGames": 83,
+        "ownerWinRate": 0.24096385542168675,
+        "lift": -0.9036144578313254,
+        "sells": 0
+      },
+      "portal": {
+        "buys": 61,
+        "offers": 134,
+        "takeRate": 0.4552238805970149,
+        "buyRate": 0.86,
+        "ownerGames": 57,
+        "ownerWinRate": 0.21052631578947367,
+        "lift": -3.9473684210526327,
+        "sells": 0
+      },
+      "tailwind": {
+        "buys": 31,
+        "offers": 123,
+        "takeRate": 0.25203252032520324,
+        "buyRate": 0.52,
+        "ownerGames": 29,
+        "ownerWinRate": 0.2413793103448276,
+        "lift": -0.8620689655172403,
+        "sells": 0
+      },
+      "workshop": {
+        "buys": 83,
+        "offers": 251,
+        "takeRate": 0.33067729083665337,
+        "buyRate": 0.92,
+        "ownerGames": 69,
+        "ownerWinRate": 0.2753623188405797,
+        "lift": 2.536231884057971,
+        "sells": 0
+      },
+      "plaza": {
+        "buys": 44,
+        "offers": 203,
+        "takeRate": 0.21674876847290642,
+        "buyRate": 0.68,
+        "ownerGames": 39,
+        "ownerWinRate": 0.41025641025641024,
+        "lift": 16.025641025641026,
+        "sells": 0
+      },
+      "guildhall": {
+        "buys": 4,
+        "offers": 41,
+        "takeRate": 0.0975609756097561,
+        "buyRate": 0.08,
+        "ownerGames": 4,
+        "ownerWinRate": 0.25,
+        "lift": 0,
+        "sells": 0
+      },
+      "bandit-camp": {
+        "buys": 78,
+        "offers": 387,
+        "takeRate": 0.20155038759689922,
+        "buyRate": 0.88,
+        "ownerGames": 44,
+        "ownerWinRate": 0.09090909090909091,
+        "lift": -15.909090909090908,
+        "sells": 0
+      },
+      "trebuchet": {
+        "buys": 43,
+        "offers": 234,
+        "takeRate": 0.18376068376068377,
+        "buyRate": 0.72,
+        "ownerGames": 36,
+        "ownerWinRate": 0.08333333333333333,
+        "lift": -16.666666666666668,
+        "sells": 0
+      },
+      "saboteur": {
+        "buys": 19,
+        "offers": 150,
+        "takeRate": 0.12666666666666668,
+        "buyRate": 0.38,
+        "ownerGames": 19,
+        "ownerWinRate": 0.15789473684210525,
+        "lift": -9.210526315789474,
+        "sells": 0
+      },
+      "tax-collector": {
+        "buys": 3,
+        "offers": 41,
+        "takeRate": 0.07317073170731707,
+        "buyRate": 0.06,
+        "ownerGames": 3,
+        "ownerWinRate": 0,
+        "lift": -25,
+        "sells": 0
+      },
+      "wall": {
+        "buys": 63,
+        "offers": 398,
+        "takeRate": 0.15829145728643215,
+        "buyRate": 0.84,
+        "ownerGames": 42,
+        "ownerWinRate": 0.023809523809523808,
+        "lift": -22.61904761904762,
+        "sells": 0
+      },
+      "moat": {
+        "buys": 25,
+        "offers": 272,
+        "takeRate": 0.09191176470588236,
+        "buyRate": 0.46,
+        "ownerGames": 23,
+        "ownerWinRate": 0.08695652173913043,
+        "lift": -16.304347826086957,
+        "sells": 0
+      },
+      "watchtower": {
+        "buys": 7,
+        "offers": 218,
+        "takeRate": 0.03211009174311927,
+        "buyRate": 0.14,
+        "ownerGames": 7,
+        "ownerWinRate": 0,
+        "lift": -25,
+        "sells": 0
+      },
+      "expansion": {
+        "buys": 0,
+        "offers": 850,
+        "takeRate": 0,
+        "buyRate": 0,
+        "ownerGames": 0,
+        "ownerWinRate": 0,
+        "lift": 0,
+        "sells": 0
+      },
+      "expansion-plus": {
+        "buys": 0,
+        "offers": 79,
+        "takeRate": 0,
+        "buyRate": 0,
+        "ownerGames": 0,
+        "ownerWinRate": 0,
+        "lift": 0,
+        "sells": 0
+      }
+    },
+    "mods": {
+      "reroll": {
+        "buys": 0,
+        "buyRate": 0
+      },
+      "second-die": {
+        "buys": 0,
+        "buyRate": 0
+      },
+      "heavy-die": {
+        "buys": 0,
+        "buyRate": 0
+      },
+      "fog": {
+        "buys": 1,
+        "buyRate": 0.02
+      },
+      "haste": {
+        "buys": 0,
+        "buyRate": 0
+      }
+    },
+    "attacks": {
+      "perGame": 2.54,
+      "cancelledRate": 0,
+      "attackerLift": -1.3641577060931898,
+      "targetLift": 2.076437587657784
+    },
+    "randomFloor": null,
+    "lopsided": [
+      {
+        "seed": 28,
+        "winner": 2,
+        "winnerBot": "scorer",
+        "margin": 11
+      },
+      {
+        "seed": 30,
+        "winner": 3,
+        "winnerBot": "greedy",
+        "margin": 7
+      },
+      {
+        "seed": 6,
+        "winner": 3,
+        "winnerBot": "greedy",
+        "margin": 6
+      },
+      {
+        "seed": 11,
+        "winner": 3,
+        "winnerBot": "scorer",
+        "margin": 6
+      },
+      {
+        "seed": 31,
+        "winner": 3,
+        "winnerBot": "scorer",
+        "margin": 6
+      },
+      {
+        "seed": 37,
+        "winner": 1,
+        "winnerBot": "scorer",
+        "margin": 6
+      },
+      {
+        "seed": 7,
+        "winner": 3,
+        "winnerBot": "scorer",
+        "margin": 5
+      },
+      {
+        "seed": 5,
+        "winner": 1,
+        "winnerBot": "scorer",
+        "margin": 4
+      },
+      {
+        "seed": 12,
+        "winner": 2,
+        "winnerBot": "scorer",
+        "margin": 4
+      },
+      {
+        "seed": 20,
+        "winner": 2,
+        "winnerBot": "scorer",
+        "margin": 4
+      }
+    ]
+  },
+  "problems": [
+    "archetype scorer wins 52.0% (> 45%)",
+    "archetype aggressor wins 8.0% (< 15%)",
+    "archetype turtle wins 6.0% (< 15%)",
+    "turnCap: no game ended early (expected, see spec)",
+    "tile tollbooth win lift -12.5 pts (< -10)",
+    "tile bandit-camp win lift -15.9 pts (< -10)",
+    "tile trebuchet win lift -16.7 pts (< -10)",
+    "tile wall win lift -22.6 pts (< -10)",
+    "tile moat win lift -16.3 pts (< -10)",
+    "tile watchtower taken 3.2% of the times offered (dead, < 5%)",
+    "tile expansion taken 0.0% of the times offered (dead, < 5%)",
+    "tile expansion-plus taken 0.0% of the times offered (dead, < 5%)"
+  ]
+}

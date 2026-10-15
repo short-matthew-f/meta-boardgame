@@ -4,8 +4,8 @@
 // state.rngState so (seed, actions[]) replays exactly.
 
 import type {
-  Action, Amount, Cond, Effect, Event, GameConfig, GameState, Modifier, PendingChoice,
-  PlayerState, QueuedTrigger, RollContext, Standing, StepResult, TileId, Trigger, Who,
+  Action, Amount, Cond, Effect, EndMode, Event, GameConfig, GameState, Modifier, PendingChoice,
+  PlayerState, QueuedTrigger, RollContext, SimEndMode, Standing, StepResult, TileId, Trigger, Who,
 } from './types.ts';
 import { rngInt, rngShuffle, seedToState } from './rng.ts';
 import {
@@ -29,7 +29,13 @@ export const BASE_CONFIG: Omit<GameConfig, 'tileSet' | 'modSet'> = {
   maxRounds: 50,
   maxTriggerChain: 12,
   sellRefund: 0.5,
+  fireOnPass: false,
+  landBonus: 1,
+  tileEndVp: 0,
 };
+
+/** The experimental `vpPool` end mode, typed as EndMode (see SimEndMode in types.ts). */
+export const VP_POOL_MODE = 'vpPool' as EndMode;
 
 export function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
   return { ...BASE_CONFIG, tileSet: [], modSet: [], ...overrides };
@@ -198,7 +204,7 @@ function applyAction(ctx: Ctx, action: Action): void {
     case 'chooseTarget': {
       const choice = st.pending!.choice as Extract<PendingChoice, { kind: 'chooseTarget' }>;
       st.pending!.choice = null;
-      runAttack(ctx, choice.player, choice.slot, choice.tile, choice.trigger, action.player);
+      runAttack(ctx, choice.player, choice.slot, choice.tile, choice.trigger, action.player, choice.effectsOf);
       drainQueue(ctx);
       return;
     }
@@ -280,7 +286,12 @@ function enqueueForwardMove(ctx: Ctx, player: number, by: number): void {
     }
     if (i < by && slot !== 0) {
       const id = p.board[slot];
-      if (id != null && tileDef(st.config, id).onPass) q.push({ kind: 'tile', player, slot, tile: id, trigger: 'onPass' });
+      if (id == null) continue;
+      const def = tileDef(st.config, id);
+      if (def.onPass) q.push({ kind: 'tile', player, slot, tile: id, trigger: 'onPass' });
+      else if (st.config.fireOnPass && def.onLand && !hasTag(def, 'mover')) {
+        q.push({ kind: 'tile', player, slot, tile: id, trigger: 'onPass', effectsOf: 'onLand' });
+      }
     }
   }
   const to = (from + by) % size;
@@ -306,7 +317,11 @@ function drainQueue(ctx: Ctx): void {
       if (item.slot === 0) continue;
       const def = activeTile(st, item.player, item.slot);
       if (!def || !def.onLand) continue;
-      resolveTileTrigger(ctx, { kind: 'tile', player: item.player, slot: item.slot, tile: def.id, trigger: 'onLand' });
+      const fire: Extract<QueuedTrigger, { kind: 'tile' }> = { kind: 'tile', player: item.player, slot: item.slot, tile: def.id, trigger: 'onLand' };
+      // Extra runs go to the front of the queue so they resolve right after the first (and after its target prompt, if any).
+      const extra = hasTag(def, 'mover') ? 0 : Math.max(0, Math.floor(st.config.landBonus) - 1);
+      for (let k = 0; k < extra; k++) ctxPending.queue.unshift({ ...fire });
+      resolveTileTrigger(ctx, fire);
       continue;
     }
     resolveTileTrigger(ctx, item);
@@ -329,10 +344,10 @@ function resolveTileTrigger(ctx: Ctx, item: Extract<QueuedTrigger, { kind: 'tile
   const st = ctx.st;
   if (isLocked(st, item.player, item.slot)) return;
   const def = tileDef(st.config, item.tile);
-  const effects = def[item.trigger];
+  const effects = def[item.effectsOf ?? item.trigger];
   if (!effects) return;
   if (needsTarget(effects)) {
-    st.pending!.choice = { kind: 'chooseTarget', player: item.player, slot: item.slot, tile: item.tile, trigger: item.trigger };
+    st.pending!.choice = { kind: 'chooseTarget', player: item.player, slot: item.slot, tile: item.tile, trigger: item.trigger, ...(item.effectsOf ? { effectsOf: item.effectsOf } : {}) };
     return;
   }
   ctx.events.push({ t: 'tileFired', player: item.player, tile: item.tile, trigger: item.trigger });
@@ -348,10 +363,10 @@ export function needsTarget(effects: Effect[]): boolean {
   return false;
 }
 
-function runAttack(ctx: Ctx, attacker: number, slot: number, tile: TileId, trigger: Trigger, target: number): void {
+function runAttack(ctx: Ctx, attacker: number, slot: number, tile: TileId, trigger: Trigger, target: number, effectsOf?: Trigger): void {
   const st = ctx.st;
   const def = tileDef(st.config, tile);
-  const effects = def[trigger] ?? [];
+  const effects = def[effectsOf ?? trigger] ?? [];
   // Shield: cancels the whole attack and is consumed.
   if (getFlag(st, target, 'shielded') > 0) {
     consumeFlag(st, target, 'shielded');
@@ -685,7 +700,12 @@ function expireModifiers(st: GameState): void {
 function checkEndTrigger(st: GameState): void {
   if (st.endTrigger) return;
   const c = st.config;
-  if (c.endMode === 'vpRace' && st.players.some((p) => p.vp >= c.endValue)) {
+  const mode = c.endMode as SimEndMode;
+  if (mode === 'vpPool') {
+    let total = 0;
+    for (const p of st.players) total += p.vp;
+    if (total >= c.endValue) st.endTrigger = { reason: 'vpPool', endsAfterRound: st.round };
+  } else if (c.endMode === 'vpRace' && st.players.some((p) => p.vp >= c.endValue)) {
     st.endTrigger = { reason: 'vpRace', endsAfterRound: st.round };
   } else if (c.endMode === 'lapRace' && st.players.some((p) => p.laps >= c.endValue)) {
     st.endTrigger = { reason: 'lapRace', endsAfterRound: st.round };
@@ -710,6 +730,19 @@ export function rankPlayers(st: GameState): number[] {
     });
 }
 
+/** config.tileEndVp: floor(sum of owned tile costs × tileEndVp) VP per player, once, at game end. */
+function awardTileEndVp(ctx: Ctx): void {
+  const st = ctx.st;
+  if (!(st.config.tileEndVp > 0)) return;
+  for (const p of st.players) {
+    let cost = 0;
+    for (const id of p.board) if (id != null) cost += tileDef(st.config, id).cost;
+    // epsilon guards floor() against float error such as 0.34 × 100 = 34.00000000000001
+    const vp = Math.floor(cost * st.config.tileEndVp + 1e-9);
+    if (vp > 0) changeResource(ctx, p.id, 'vp', vp, 'endgame');
+  }
+}
+
 function endTurn(ctx: Ctx): void {
   const st = ctx.st;
   refillShop(ctx);
@@ -728,10 +761,12 @@ function endTurn(ctx: Ctx): void {
     st.discard.push(...stale);
     refillShop(ctx);
   }
-  ctx.events.push({ t: 'roundEnded', round: st.round, standings: standings(st) });
   let reason: string | null = null;
   if (st.endTrigger && st.round >= st.endTrigger.endsAfterRound) reason = st.endTrigger.reason;
   else if (st.round >= st.config.maxRounds) reason = 'maxRounds';
+  // End-of-game VP lands before the final roundEnded, so standings, ranking and metrics all see it.
+  if (reason) awardTileEndVp(ctx);
+  ctx.events.push({ t: 'roundEnded', round: st.round, standings: standings(st) });
   if (reason) {
     st.phase = 'ended';
     st.pending = null;

@@ -95,6 +95,26 @@ and attacking is ruinous (attacker lift −16 VP, every attack-tile owner has a
 tile, and in a 32-round game that compounds. Attacks need to touch VP, or be
 cheaper than a Shrine, to be worth a slot at all.
 
+## Experimental variants (all off by default)
+
+Four rule variants added to test the "a tile fires about twice per game" finding.
+Each is a `GameConfig` option whose default reproduces today's behaviour
+exactly (a test compares `batch({ games: 50 })` against `tests/fixtures/batch-default-50.json`,
+captured before the change). Results: `sim/experiments/density-results.md`.
+CLI: `--fireOnPass`, `--landBonus N`, `--tileEndVp X`, `--tiles superlinear`, `--endMode vpPool --endValue N`.
+
+| Option | Decision | Reasoning |
+| --- | --- | --- |
+| `fireOnPass` | A forward move queues each passed slot's `onLand` effects as a `tileFired` with trigger `onPass`; the landing still fires `onLand`. Movers (tag `mover`) never fire on pass; a tile that has its own `onPass` keeps only that. Passed attack tiles prompt for a target like a landing does. A slot passed twice in one move fires twice. Locked tiles are inert as usual. Forced moves of other players and teleports still trigger nothing. | Springboard, Portal and Tailwind would chain or teleport mid-move. The queue stays in path order: lap income and `onLap` tiles, passes, then the landing. Queue items and the target prompt carry `effectsOf: 'onLand'` so the event says `onPass` while the effects come from `onLand`. |
+| `landBonus` | The landed tile's `onLand` list runs `landBonus` times, consecutively, each with its own `tileFired` and its own target prompt for attack tiles. Mover tiles always run once. | Spec says "number of times the onLand list runs"; a Springboard run twice would move 4 and a doubled Tailwind is a no-op, so movers are excluded as they are for passing. |
+| `tileEndVp` | When the game ends, each player gains `floor(sum of cost of every tile on their board x tileEndVp)` VP. Locked tiles and the Expansion+ Market count. Emitted as `resource` events with source `endgame` (players with 0 gain no event) **before** the final `roundEnded`, so `roundEnded.standings`, `rankPlayers`, `winner`, `gameEnded` and every metric see the final VP. Applied once, in the same `endTurn` that decides the game is over, after the end-of-round shop cycle. A 1e-9 epsilon guards `floor` against float error (0.34 x 100). | Metrics read the last `roundEnded`; applying it any later would make metrics disagree with the winner. |
+| `vpPool` | New end mode: when total VP across all players is >= `endValue` after any turn, the game ends at the end of that round (everyone completes the round). `tileEndVp` is awarded only after, so it is never counted toward the pool. `gameEnded.reason` is `vpPool`. | Same shape as `vpRace`. Typed as `SimEndMode`; `EndMode` (what `web/` switches over exhaustively) is unchanged, so set it through `VP_POOL_MODE` or a cast. |
+| Superlinear tiles | `tiles/starter-superlinear.json`, exported as `SUPERLINEAR_TILES`: Cathedral 10c gives 5 VP (was 3), Mine 5c gives 4 coins (was 3); the rest is starter. | Dominion-style superlinear VP in cost. |
+
+Bots are unchanged. Profile bots score tiles by their weights and never see
+`tileEndVp`; Lookahead evaluates through `previewRoll`, so it sees `fireOnPass`
+and `landBonus` but its score ignores the pending end-of-game VP.
+
 ## Open items for the next pass
 
 - [ ] Scorer dominance (design change needed; see above).
@@ -103,3 +123,4 @@ cheaper than a Shrine, to be worth a slot at all.
 - [ ] Placement is cosmetic under d6 × 8 slots; decide whether that is fine.
 - [ ] Shop refill rule: cycling one tile per round fixed the stall; the spec's alternative (refresh bought slots only) is now known to lock the game.
 - [ ] Still open from the spec: Start as an upgradeable slot, the 50% sell refund (no tile was ever sold by any bot in any batch), tie-break order, catch-up for late seats (no seat bias measured, so nothing to fix yet).
+- [ ] Density experiment (tiles that fire on pass, end-of-game tile VP, finite VP pool, superlinear VP) is run and tabulated in `sim/experiments/density-results.md`; nothing in it is adopted, every variant is still off by default.

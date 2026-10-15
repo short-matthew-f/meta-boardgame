@@ -35,6 +35,8 @@ npm run typecheck
 npm run sim -- batch     # 1000 games, standard lineup, turnCap 15
 npm run sim -- batch --games 500 --lineup lookahead,scorer,greedy,turtle --endMode vpRace --endValue 30
 npm run sim -- balance   # standard lineup × three end modes + placement value + random floor
+npm run sim -- batch --fireOnPass --landBonus 2 --tileEndVp 0.34 --tiles superlinear --endMode vpPool --endValue 60   # experimental variants, off by default
+node --import tsx sim/experiments/density.ts   # the variant experiment (about 100 s)
 npm run sim -- replay --seed 943   # print one game's event log
 npm run sim -- batch --json        # the BatchReport as JSON
 npm run dev:web                    # the browser UI on http://localhost:8000 (rebuilds on save)

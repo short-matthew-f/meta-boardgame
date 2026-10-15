@@ -69,7 +69,14 @@ export type ModDef = {
 
 export type DieSpec = { sides: number };
 
+/** End modes the browser UI offers. */
 export type EndMode = 'turnCap' | 'vpRace' | 'lapRace';
+/**
+ * Every end mode the engine implements. `vpPool` is experimental and typed
+ * apart from `EndMode` because web/ switches exhaustively over `EndMode`; set
+ * it with `VP_POOL_MODE` (engine.ts) or a cast.
+ */
+export type SimEndMode = EndMode | 'vpPool';
 
 export type GameConfig = {
   players: number;
@@ -81,12 +88,19 @@ export type GameConfig = {
   /** Oldest unbought shop tiles discarded at the end of each round (0 = never). */
   shopCycle: number;
   endMode: EndMode;
+  /** vpPool: total VP across all players that ends the game (at the end of that round). */
   endValue: number;
   /** Hard stop so a game that never trips its end condition still terminates. */
   maxRounds: number;
   /** Cap on chained self-moves / roll-agains within one turn. */
   maxTriggerChain: number;
   sellRefund: number; // fraction of cost refunded on sale
+  /** Experimental, off by default: a tile's onLand effects also fire when the owner's token passes over it (not movers, not tiles with their own onPass). */
+  fireOnPass: boolean;
+  /** Times the landed tile's onLand list runs on landing (1 = today). Movers always run once. */
+  landBonus: number;
+  /** Experimental, off by default: at game end each player gains floor(sum of owned tile costs × tileEndVp) VP. */
+  tileEndVp: number;
   tileSet: TileDef[];
   modSet: ModDef[];
 };
@@ -113,12 +127,12 @@ export type PlayerState = {
 
 /** A tile trigger waiting to be resolved during the roll phase. */
 export type QueuedTrigger =
-  | { kind: 'tile'; player: number; slot: number; tile: TileId; trigger: Trigger }
+  | { kind: 'tile'; player: number; slot: number; tile: TileId; trigger: Trigger; effectsOf?: Trigger }
   | { kind: 'land'; player: number; slot: number }
   | { kind: 'lapIncome'; player: number };
 
 export type PendingChoice =
-  | { kind: 'chooseTarget'; player: number; slot: number; tile: TileId; trigger: Trigger }
+  | { kind: 'chooseTarget'; player: number; slot: number; tile: TileId; trigger: Trigger; effectsOf?: Trigger }
   | { kind: 'reroll'; player: number; dice: number[] };
 
 export type RollContext = {
@@ -166,7 +180,7 @@ export type Event =
   | { t: 'moved'; player: number; from: number; to: number; passedStart: boolean }
   | { t: 'lap'; player: number; laps: number; income: number }
   | { t: 'tileFired'; player: number; tile: TileId; trigger: Trigger }
-  | { t: 'resource'; player: number; res: Resource; delta: number; source: TileId | ModId | 'lap' | 'sale' }
+  | { t: 'resource'; player: number; res: Resource; delta: number; source: TileId | ModId | 'lap' | 'sale' | 'endgame' }
   | { t: 'attacked'; attacker: number; target: number; tile: TileId; cancelled: boolean }
   | { t: 'bought'; player: number; item: TileId | ModId; cost: number; slot?: number }
   | { t: 'sold'; player: number; tile: TileId; refund: number }
