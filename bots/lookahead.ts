@@ -2,21 +2,25 @@
 // with `pass`, and the player's next roll averaged over every dice outcome.
 // The score is (vp + coins × 0.5) differential against the leader.
 // Only the best slot per tile is evaluated to keep the branching under ~40.
-import type { Action, GameState } from '../engine/types.ts';
+import type { Action, GameState, PlayerState } from '../engine/types.ts';
 import { legalActions, previewRoll, step } from '../engine/engine.ts';
 import { diceOutcomes, effectiveDice, landingDistribution, tileDef } from '../engine/board.ts';
 import type { Bot } from './types.ts';
 
 const COIN_WEIGHT = 0.5;
+/** Owned tiles count as assets at a fraction of their cost, so a one-ply search still invests. */
+const ASSET_WEIGHT = 0.45;
 
-function material(p: { vp: number; coins: number }): number {
-  return p.vp + p.coins * COIN_WEIGHT;
+function material(s: GameState, p: PlayerState): number {
+  let assets = 0;
+  for (const id of p.board) if (id != null) assets += tileDef(s.config, id).cost;
+  return p.vp + p.coins * COIN_WEIGHT + assets * ASSET_WEIGHT;
 }
 
 function differential(s: GameState, me: number): number {
   let best = -Infinity;
-  for (const p of s.players) if (p.id !== me) best = Math.max(best, material(p));
-  return material(s.players[me]!) - best;
+  for (const p of s.players) if (p.id !== me) best = Math.max(best, material(s, p));
+  return material(s, s.players[me]!) - best;
 }
 
 /** Pick targets inside a preview: the opponent with the most material. */
@@ -25,7 +29,7 @@ function previewTarget(s: GameState, legal: Action[]): Action {
   let bestV = -Infinity;
   for (const a of legal) {
     if (a.type !== 'chooseTarget') continue;
-    const v = material(s.players[a.player]!);
+    const v = material(s, s.players[a.player]!);
     if (v > bestV) { bestV = v; best = a; }
   }
   return best;
