@@ -3,6 +3,7 @@ import { makeProfileBot, type Profile } from './profile.ts';
 const base = {
   switchRound: 999,
   modWeights: {} as Record<string, number>,
+  modReserve: 6,
   targetPolicy: 'random' as const,
   placement: 'random' as const,
   placementWeight: 2,
@@ -17,8 +18,8 @@ const base = {
 export const greedyProfile: Profile = {
   ...base,
   name: 'greedy',
-  early: { income: 3, combo: 1, score: 0.5, expansion: -2, attack: -2, defense: -2, mover: -1 },
-  late: { score: 3, combo: 1.5, income: 0.5, expansion: -2, attack: -2, defense: -2, mover: -1 },
+  early: { income: 3, combo: 1, score: 0.5, expansion: -2, attack: -2, defense: -2, mover: 1 },
+  late: { score: 3, combo: 1.5, income: 0.5, expansion: -2, attack: -2, defense: -2, mover: 1 },
   switchRound: 8,
   modWeights: { 'second-die': 1 },
   targetPolicy: 'coinLeader',
@@ -32,8 +33,8 @@ export const greedyRandomProfile: Profile = { ...greedyProfile, name: 'greedy-ra
 export const scorerProfile: Profile = {
   ...base,
   name: 'scorer',
-  early: { score: 3, combo: 1, income: 0.5, expansion: -2, attack: -2, defense: -2, mover: -1 },
-  late: { score: 3, combo: 1, income: 0.5, expansion: -2, attack: -2, defense: -2, mover: -1 },
+  early: { score: 3, combo: 1, income: 0.5, expansion: -2, attack: -2, defense: -2, mover: 1 },
+  late: { score: 3, combo: 1, income: 0.5, expansion: -2, attack: -2, defense: -2, mover: 1 },
   vpPerCoin: true,
   targetPolicy: 'vpLeader',
   placement: 'adjacentScore',
@@ -43,8 +44,8 @@ export const scorerProfile: Profile = {
 export const aggressorProfile: Profile = {
   ...base,
   name: 'aggressor',
-  early: { attack: 3, income: 1, score: 1, combo: 0, expansion: -2, defense: -2, mover: -1 },
-  late: { attack: 3, score: 1.5, income: 0.5, combo: 0, expansion: -2, defense: -2, mover: -1 },
+  early: { attack: 3, income: 1, score: 1, combo: 0, expansion: -2, defense: -2, mover: 1 },
+  late: { attack: 3, score: 1.5, income: 0.5, combo: 0, expansion: -2, defense: -2, mover: 1 },
   modWeights: { fog: 2, 'second-die': 1.5, 'heavy-die': 1.5, haste: 0.5 },
   targetPolicy: 'vpLeader',
   placement: 'likely',
@@ -54,8 +55,8 @@ export const aggressorProfile: Profile = {
 export const turtleProfile: Profile = {
   ...base,
   name: 'turtle',
-  early: { defense: 3, income: 2, score: 1, combo: 0.5, expansion: -2, attack: -99, mover: -1 },
-  late: { defense: 1, score: 2.5, income: 1, combo: 0.5, expansion: -2, attack: -99, mover: -1 },
+  early: { defense: 3, income: 2, score: 1, combo: 0.5, expansion: -2, attack: -99, mover: 1 },
+  late: { defense: 1, score: 2.5, income: 1, combo: 0.5, expansion: -2, attack: -99, mover: 1 },
   switchRound: 8,
   targetPolicy: 'random',
   placement: 'likely',
@@ -65,8 +66,8 @@ export const turtleProfile: Profile = {
 export const expanderProfile: Profile = {
   ...base,
   name: 'expander',
-  early: { expansion: 3, combo: 2, income: 1.5, score: 0.5, attack: -2, defense: -2, mover: -1 },
-  late: { combo: 3, score: 2, income: 1, expansion: 0, attack: -2, defense: -2, mover: -1 },
+  early: { expansion: 3, combo: 2, income: 1.5, score: 0.5, attack: -2, defense: -2, mover: 1 },
+  late: { combo: 3, score: 2, income: 1, expansion: 0, attack: -2, defense: -2, mover: 1 },
   switchRound: 6,
   targetPolicy: 'vpLeader',
   placement: 'clusterCombo',

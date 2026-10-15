@@ -99,3 +99,35 @@ export function diceOutcomes(dice: DieSpec[]): { values: number[]; p: number }[]
   }
   return outs;
 }
+
+/**
+ * Probability that the token lands on each slot at least once within the
+ * next `rolls` rolls (exact, by tracking the position distribution).
+ * "Likely landing slot" for placement decisions.
+ */
+export function landingMass(position: number, dice: DieSpec[], boardSize: number, rolls = 3): Map<number, number> {
+  const stepDist = totalDistribution(dice);
+  // state: Map<position, Map<landedMask?>> would explode; instead track
+  // P(not yet landed on s) per slot via independent position chains.
+  // Positions are a Markov chain; P(land on s within k rolls) = 1 - P(avoid s for k rolls).
+  const out = new Map<number, number>();
+  for (let s = 0; s < boardSize; s++) {
+    let dist = new Map<number, number>([[position, 1]]);
+    let avoid = 1;
+    for (let r = 0; r < rolls; r++) {
+      const next = new Map<number, number>();
+      let hit = 0;
+      for (const [pos, p] of dist) {
+        for (const [total, q] of stepDist) {
+          const to = (pos + total) % boardSize;
+          if (to === s) hit += p * q;
+          else next.set(to, (next.get(to) ?? 0) + p * q);
+        }
+      }
+      avoid -= hit;
+      dist = next;
+    }
+    out.set(s, 1 - avoid);
+  }
+  return out;
+}

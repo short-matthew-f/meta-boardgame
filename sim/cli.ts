@@ -58,8 +58,8 @@ function printReport(r: BatchReport): void {
   if (m.randomFloor != null) console.log(`Random floor: ${pct(m.randomFloor)}`);
   console.log('\nTiles');
   console.log(table(
-    Object.entries(m.tiles).sort((a, b) => b[1].buyRate - a[1].buyRate).map(([id, t]) => [id, t.buys, pct(t.buyRate), t.sells, t.ownerGames, pct(t.ownerWinRate), (t.lift >= 0 ? '+' : '') + t.lift.toFixed(1)]),
-    ['tile', 'buys', 'buy rate', 'sells', 'owners', 'owner win', 'lift pts'],
+    Object.entries(m.tiles).sort((a, b) => b[1].takeRate - a[1].takeRate).map(([id, t]) => [id, t.buys, t.offers, pct(t.takeRate), pct(t.buyRate), t.sells, t.ownerGames, pct(t.ownerWinRate), (t.lift >= 0 ? '+' : '') + t.lift.toFixed(1)]),
+    ['tile', 'buys', 'offers', 'take rate', 'in games', 'sells', 'owners', 'owner win', 'lift pts'],
   ));
   console.log('\nMods');
   console.log(table(Object.entries(m.mods).map(([id, x]) => [id, x.buys, pct(x.buyRate)]), ['mod', 'buys', 'buy rate']));

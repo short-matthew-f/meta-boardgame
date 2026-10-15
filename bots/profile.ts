@@ -2,7 +2,7 @@
 // wins, ties break with the bot RNG. Adding a style is adding a Profile.
 import type { Action, Effect, GameState, Tag, TileDef } from '../engine/types.ts';
 import type { Rng } from '../engine/rng.ts';
-import { countAdjacentWithTag, effectiveDice, landingDistribution, tileDef } from '../engine/board.ts';
+import { countAdjacentWithTag, effectiveDice, landingMass, tileDef } from '../engine/board.ts';
 import type { Bot } from './types.ts';
 
 export type TargetPolicy = 'coinLeader' | 'vpLeader' | 'random';
@@ -17,9 +17,13 @@ export type Profile = {
   /** Prefer the tile with the best static VP-per-coin among score tiles (Scorer). */
   vpPerCoin?: boolean;
   modWeights: Record<string, number>;
+  /** Coins to keep in hand after buying a mod; mods are never bought below it. */
+  modReserve: number;
   targetPolicy: TargetPolicy;
   placement: Placement;
   placementWeight: number;
+  /** How many future rolls 'likely' placement looks across. */
+  lookRolls?: number;
   /** Penalty per coin spent. */
   costWeight: number;
   /** Penalty for replacing an owned tile (scaled by the old tile's cost). */
@@ -61,13 +65,11 @@ function leaderBy(state: GameState, me: number, key: 'coins' | 'vp'): number {
   return best;
 }
 
-function placementScore(state: GameState, me: number, slot: number, def: TileDef, placement: Placement): number {
-  const p = state.players[me]!;
+function placementScore(state: GameState, me: number, slot: number, def: TileDef, placement: Placement, mass: () => Map<number, number>): number {
   switch (placement) {
     case 'likely': {
       if (!def.onLand) return 0;
-      const dist = landingDistribution(p.position, effectiveDice(state, me), p.board.length);
-      return (dist.get(slot) ?? 0) * 3; // scale: best slot of a d6 is 1/6
+      return mass().get(slot) ?? 0;
     }
     case 'adjacentScore':
       return countAdjacentWithTag(state, me, slot, 'score') / 2;
@@ -99,6 +101,8 @@ export function makeProfileBot(profile: Profile): Bot {
 
       const weights = state.round < profile.switchRound ? profile.early : profile.late;
       const p = state.players[me]!;
+      let massCache: Map<number, number> | null = null;
+      const mass = () => (massCache ??= landingMass(p.position, effectiveDice(state, me), p.board.length, profile.lookRolls ?? 3));
       let best: Action[] = [];
       let bestScore = -Infinity;
       for (const a of legal) {
@@ -122,7 +126,7 @@ export function makeProfileBot(profile: Profile): Bot {
             const def = tileDef(state.config, state.shop[a.shopIndex]!);
             let s = tagWeight(def);
             if (profile.vpPerCoin && def.tags.includes('score')) s += (staticValue(def).vp / def.cost) * 4;
-            s += placementScore(state, me, a.slot, def, profile.placement) * profile.placementWeight;
+            s += placementScore(state, me, a.slot, def, profile.placement, mass) * profile.placementWeight;
             s -= def.cost * profile.costWeight;
             const old = p.board[a.slot];
             if (old != null) s -= tileDef(state.config, old).cost * profile.replaceWeight;
@@ -134,8 +138,11 @@ export function makeProfileBot(profile: Profile): Bot {
             if (def.insertTile) s += 0.5;
             return s;
           }
-          case 'buyMod':
-            return (profile.modWeights[a.modId] ?? -1) - (state.config.modSet.find((m) => m.id === a.modId)?.cost ?? 0) * profile.costWeight;
+          case 'buyMod': {
+            const cost = state.config.modSet.find((m) => m.id === a.modId)?.cost ?? 0;
+            if (p.coins - cost < profile.modReserve) return -Infinity;
+            return (profile.modWeights[a.modId] ?? -1) - cost * profile.costWeight;
+          }
           case 'sellTile':
             return profile.sellWeight;
           default:

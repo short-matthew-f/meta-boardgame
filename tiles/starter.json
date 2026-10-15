@@ -33,12 +33,12 @@
                  "then": [{ "op": "gain", "res": "vp", "amount": 3 }] }] },
 
   { "id": "bandit-camp", "name": "Bandit Camp", "cost": 4, "copies": 3, "tags": ["attack"],
-    "onLand": [{ "op": "steal", "res": "coins", "amount": 2 }] },
-  { "id": "trebuchet", "name": "Trebuchet", "cost": 6, "copies": 2, "tags": ["attack"],
+    "onLand": [{ "op": "steal", "res": "coins", "amount": 3 }] },
+  { "id": "trebuchet", "name": "Trebuchet", "cost": 5, "copies": 2, "tags": ["attack"],
     "onLand": [{ "op": "move", "by": -3, "who": "target" }] },
-  { "id": "saboteur", "name": "Saboteur", "cost": 7, "copies": 2, "tags": ["attack"],
+  { "id": "saboteur", "name": "Saboteur", "cost": 6, "copies": 2, "tags": ["attack"],
     "onLand": [{ "op": "lockTile", "who": "target", "rounds": 2 }] },
-  { "id": "tax-collector", "name": "Tax Collector", "cost": 9, "copies": 1, "tags": ["attack"],
+  { "id": "tax-collector", "name": "Tax Collector", "cost": 7, "copies": 1, "tags": ["attack"],
     "onLand": [{ "op": "steal", "res": "vp", "amount": 1 }] },
 
   { "id": "wall", "name": "Wall", "cost": 4, "copies": 3, "tags": ["defense"],

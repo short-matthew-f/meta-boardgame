@@ -78,6 +78,8 @@ export type GameConfig = {
   lapIncome: number;
   shopSize: number;
   shopActions: number;
+  /** Oldest unbought shop tiles discarded at the end of each round (0 = never). */
+  shopCycle: number;
   endMode: EndMode;
   endValue: number;
   /** Hard stop so a game that never trips its end condition still terminates. */

@@ -11,7 +11,7 @@ export function playGame(seed: number, bots: Bot[], config: GameConfig, maxSteps
   let state = createGame(config, seed);
   const botRng = new Rng(seed + BOT_RNG_OFFSET);
   const actions: Action[] = [];
-  const events: Event[] = [];
+  const events: Event[] = [{ t: 'shopRefilled', shop: state.shop.slice() }];
   let steps = 0;
   while (state.phase !== 'ended') {
     if (++steps > maxSteps) throw new Error(`game ${seed} exceeded ${maxSteps} steps`);
@@ -28,7 +28,7 @@ export function playGame(seed: number, bots: Bot[], config: GameConfig, maxSteps
 /** Re-run a recorded action list. Returns the events it produces and the final state. */
 export function replay(seed: number, config: GameConfig, actions: Action[]): { events: Event[]; state: GameState } {
   let state = createGame(config, seed);
-  const events: Event[] = [];
+  const events: Event[] = [{ t: 'shopRefilled', shop: state.shop.slice() }];
   for (const a of actions) {
     const r = step(state, a);
     events.push(...r.events);

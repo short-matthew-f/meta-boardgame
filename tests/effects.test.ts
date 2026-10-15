@@ -274,7 +274,7 @@ describe('effect DSL, one test per op', () => {
 
 describe('shop and board', () => {
   it('buyTile places or replaces; replaced tiles are discarded with no refund', () => {
-    const config = makeConfig({ players: 2, tileSet: STARTER_TILES, modSet: [], startCoins: 50 });
+    const config = makeConfig({ players: 2, tileSet: STARTER_TILES, modSet: [], startCoins: 50, shopCycle: 0 });
     let s = createGame(config, 3);
     s.shop = ['market', 'shrine', 'expansion'];
     s.players.forEach((p) => (p.dice = [{ sides: 1 }]));
@@ -306,7 +306,7 @@ describe('shop and board', () => {
   });
 
   it('expansion grows the loop, keeps the token on its tile, and Expansion+ inserts a Market', () => {
-    const config = makeConfig({ players: 2, tileSet: STARTER_TILES, modSet: [], startCoins: 50 });
+    const config = makeConfig({ players: 2, tileSet: STARTER_TILES, modSet: [], startCoins: 50, shopCycle: 0 });
     let s = createGame(config, 3);
     s.shop = ['expansion', 'expansion-plus'];
     s.players[0]!.board[2] = 'shrine';
@@ -338,6 +338,23 @@ describe('shop and board', () => {
     expect(r.state.shop).toEqual(['shrine', 'mine']);
     expect(r.state.discard).toEqual([]);
     expect(r.events).toContainEqual({ t: 'shopRefilled', shop: ['shrine', 'mine'] });
+  });
+
+  it('the oldest unbought shop tile is cycled out at the end of each round', () => {
+    const config = makeConfig({ players: 2, tileSet: STARTER_TILES, modSet: [], shopSize: 3, shopCycle: 1 });
+    let s = createGame(config, 3);
+    s.shop = ['cathedral', 'archive', 'bank'];
+    s.bag = ['shrine', 'market'];
+    for (let i = 0; i < 2; i++) s = step(step(s, { type: 'roll' }).state, { type: 'pass' }).state;
+    expect(s.round).toBe(2);
+    expect(s.shop).toEqual(['archive', 'bank', 'shrine']);
+    expect(s.discard).toEqual(['cathedral']);
+    // with shopCycle 0 the shop is untouched
+    const s0 = createGame({ ...config, shopCycle: 0 }, 3);
+    s0.shop = ['cathedral', 'archive', 'bank'];
+    let st = s0;
+    for (let i = 0; i < 2; i++) st = step(step(st, { type: 'roll' }).state, { type: 'pass' }).state;
+    expect(st.shop).toEqual(['cathedral', 'archive', 'bank']);
   });
 
   it('adjacency is correct on the loop, including after expansion', () => {

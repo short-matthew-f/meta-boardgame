@@ -23,6 +23,7 @@ export const BASE_CONFIG: Omit<GameConfig, 'tileSet' | 'modSet'> = {
   lapIncome: 3,
   shopSize: 6,
   shopActions: 1,
+  shopCycle: 1,
   endMode: 'turnCap',
   endValue: 15,
   maxRounds: 50,
@@ -663,7 +664,7 @@ function afterShopAction(ctx: Ctx): void {
 
 function refillShop(ctx: Ctx): void {
   const st = ctx.st;
-  const before = st.shop.length;
+  const before = st.shop.join(',');
   while (st.shop.length < st.config.shopSize) {
     if (st.bag.length === 0) {
       if (st.discard.length === 0) break;
@@ -672,7 +673,7 @@ function refillShop(ctx: Ctx): void {
     }
     st.shop.push(st.bag.shift()!);
   }
-  if (st.shop.length !== before) ctx.events.push({ t: 'shopRefilled', shop: st.shop.slice() });
+  if (st.shop.join(',') !== before) ctx.events.push({ t: 'shopRefilled', shop: st.shop.slice() });
 }
 
 function expireModifiers(st: GameState): void {
@@ -721,7 +722,12 @@ function endTurn(ctx: Ctx): void {
     st.pending = freshRollContext();
     return;
   }
-  // round end
+  // round end: cycle the oldest unbought shop tiles so a stale shop cannot lock the game
+  if (st.config.shopCycle > 0 && st.shop.length > 0) {
+    const stale = st.shop.splice(0, Math.min(st.config.shopCycle, st.shop.length));
+    st.discard.push(...stale);
+    refillShop(ctx);
+  }
   ctx.events.push({ t: 'roundEnded', round: st.round, standings: standings(st) });
   let reason: string | null = null;
   if (st.endTrigger && st.round >= st.endTrigger.endsAfterRound) reason = st.endTrigger.reason;

@@ -5,6 +5,8 @@ import type { Event, GameConfig, GameRecord } from '../engine/types.ts';
 export type BotStat = { games: number; wins: number; rate: number };
 export type TileStat = {
   buys: number;            // total bought events
+  offers: number;          // tile-turns it sat in the shop while the active player could afford it
+  takeRate: number;        // buys / offers
   buyRate: number;         // games in which at least one copy was bought / games
   ownerGames: number;      // (game, player) pairs where the player bought it
   ownerWinRate: number;
@@ -67,7 +69,8 @@ export function computeMetrics(records: GameRecord[], config: GameConfig): Metri
   const decidedRounds: number[] = [];
   const decidedFracs: number[] = [];
   const tiles: Record<string, TileStat> = {};
-  for (const t of config.tileSet) tiles[t.id] = { buys: 0, buyRate: 0, ownerGames: 0, ownerWinRate: 0, lift: 0, sells: 0 };
+  const cost = new Map(config.tileSet.map((t) => [t.id, t.cost]));
+  for (const t of config.tileSet) tiles[t.id] = { buys: 0, offers: 0, takeRate: 0, buyRate: 0, ownerGames: 0, ownerWinRate: 0, lift: 0, sells: 0 };
   const tileOwnerWins: Record<string, number> = {};
   const tileGamesBought: Record<string, number> = {};
   const mods: Record<string, { buys: number; buyRate: number }> = {};
@@ -98,8 +101,28 @@ export function computeMetrics(records: GameRecord[], config: GameConfig): Metri
     const modBy: Record<string, Set<number>> = {};
     const attacked = new Set<number>();
     const attackers = new Set<number>();
+    let shop: string[] = [];
+    const coins = Array.from({ length: players }, () => config.startCoins);
+    let turn: { player: number; shop: string[] } | null = null;
+    // An offer is a tile copy on display during a shop phase that the player could afford.
+    const finalizeTurn = (coinsNow: number) => {
+      if (!turn) return;
+      for (const id of turn.shop) if (tiles[id] && cost.get(id)! <= coinsNow) tiles[id]!.offers++;
+      turn = null;
+    };
     for (const e of rec.events) {
-      if (e.t === 'bought') {
+      if (e.t === 'resource') {
+        coins[e.player] = (coins[e.player] ?? 0) + (e.res === 'coins' ? e.delta : 0);
+      } else if (e.t === 'shopRefilled') {
+        shop = e.shop;
+      } else if (e.t === 'rolled') {
+        if (turn && turn.player === e.player) continue; // roll-again within the same turn
+        finalizeTurn(coins[turn?.player ?? 0]!);
+        turn = { player: e.player, shop: shop.slice() };
+      } else if (e.t === 'roundEnded') {
+        finalizeTurn(coins[turn?.player ?? 0]!);
+      } else if (e.t === 'bought') {
+        if (turn && turn.player === e.player) finalizeTurn(coins[e.player]! + e.cost);
         if (tiles[e.item]) {
           tiles[e.item]!.buys++;
           (boughtBy[e.item] ??= new Set()).add(e.player);
@@ -135,6 +158,7 @@ export function computeMetrics(records: GameRecord[], config: GameConfig): Metri
   for (const b of Object.values(byBot)) b.rate = b.games ? b.wins / b.games : 0;
   for (const s of bySeat) s.rate = s.games ? s.wins / s.games : 0;
   for (const [id, t] of Object.entries(tiles)) {
+    t.takeRate = t.offers ? t.buys / t.offers : 0;
     t.buyRate = games ? (tileGamesBought[id] ?? 0) / games : 0;
     t.ownerWinRate = t.ownerGames ? (tileOwnerWins[id] ?? 0) / t.ownerGames : 0;
     t.lift = t.ownerGames ? (t.ownerWinRate - 1 / players) * 100 : 0;
@@ -187,8 +211,8 @@ export function flagProblems(m: Metrics, config: GameConfig, opts: { placementLi
   if ((m.gameLength.byReason['maxRounds'] ?? 0) > 0) out.push(`${m.gameLength.byReason['maxRounds']} games hit maxRounds`);
   if (m.decidedBy.medianFraction < 0.5) out.push(`decided by ${pct(m.decidedBy.medianFraction)} of game length (< 50%)`);
   for (const [id, t] of Object.entries(m.tiles)) {
-    if (t.buyRate < 0.05) out.push(`tile ${id} bought in ${pct(t.buyRate)} of games (dead, < 5%)`);
-    if (t.buyRate > 0.8) out.push(`tile ${id} bought in ${pct(t.buyRate)} of games (auto-buy, > 80%)`);
+    if (t.takeRate < 0.05) out.push(`tile ${id} taken ${pct(t.takeRate)} of the times offered (dead, < 5%)`);
+    if (t.takeRate > 0.8) out.push(`tile ${id} taken ${pct(t.takeRate)} of the times offered (auto-buy, > 80%)`);
     if (t.ownerGames >= 20 && t.lift > 20) out.push(`tile ${id} win lift +${t.lift.toFixed(1)} pts (> +20)`);
     if (t.ownerGames >= 20 && t.lift < -10) out.push(`tile ${id} win lift ${t.lift.toFixed(1)} pts (< -10)`);
   }
