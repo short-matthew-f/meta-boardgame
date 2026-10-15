@@ -6,7 +6,7 @@
 //   npm run sim -- balance [--games N] [--seed S]
 //   npm run sim -- replay  --seed S [--lineup a,b,c,d] [--endMode m] [--endValue v]
 import { parseArgs } from 'node:util';
-import type { DieSpec, EndMode } from '../engine/types.ts';
+import type { EndMode } from '../engine/types.ts';
 import { SUPERLINEAR_TILES } from '../tiles/index.ts';
 import { describeEvent } from '../engine/describe.ts';
 import { batch, DEFAULT_SPEC, parseDice, placementValue, type BatchReport, type BatchSpec } from './batch.ts';

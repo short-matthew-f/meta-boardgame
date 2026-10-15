@@ -4,21 +4,23 @@
 // state.rngState so (seed, actions[]) replays exactly.
 
 import type {
-  Action, Effect, EndMode, GameConfig, GameState, PendingChoice, PlayerState, QueuedTrigger, RollContext,
-  SimEndMode, Standing, StepResult, TileId, Trigger,
+  Action, EndMode, GameConfig, GameState, PendingChoice, PlayerState, QueuedTrigger, RollContext, StepResult, TileId,
 } from './types.ts';
 import { rngInt, rngShuffle, seedToState } from './rng.ts';
-import { activeTile, effectiveDice, hasTag, isLocked, ownedCost, ownedCount, tileDef } from './board.ts';
+import { activeTile, effectiveDice, hasTag, tileDef } from './board.ts';
+import { type Ctx, enqueueForwardMove } from './effects.ts';
+import { resolveTileTrigger, runAttack } from './attack.ts';
+import { buyExpansion, buyMod, buyTile, sellTile } from './loopsShop.ts';
+import { awardTileEndVp, checkEndTrigger, rankPlayers, standings } from './endgame.ts';
 import {
-  type Ctx, type EffectCtx, changeResource, consumeFlag, enqueueForwardMove, getFlag, runEffects,
-} from './effects.ts';
-import {
-  awardPassiveEndVp, mostLandmarks, sharedBuyActions, sharedBuyLandmark, sharedBuyTile, sharedForwardMove,
-  sharedSellActions, sharedSellTile,
+  awardPassiveEndVp, sharedBuyActions, sharedBuyLandmark, sharedBuyTile, sharedForwardMove, sharedSellActions,
+  sharedSellTile,
 } from './shared.ts';
 import { makeSharedSlots } from './sharedBoard.ts';
 
 export { evalAmount, getFlag } from './effects.ts';
+export { needsTarget } from './attack.ts';
+export { rankPlayers, standings } from './endgame.ts';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -348,137 +350,10 @@ function finishRoll(ctx: Ctx): void {
   st.shopActionsLeft = st.config.shopActions;
 }
 
-function resolveTileTrigger(ctx: Ctx, item: Extract<QueuedTrigger, { kind: 'tile' }>): void {
-  const st = ctx.st;
-  if (isLocked(st, item.player, item.slot)) return;
-  const def = tileDef(st.config, item.tile);
-  const effects = def[item.effectsOf ?? item.trigger];
-  if (!effects) return;
-  if (needsTarget(effects)) {
-    st.pending!.choice = { kind: 'chooseTarget', player: item.player, slot: item.slot, tile: item.tile, trigger: item.trigger, ...(item.effectsOf ? { effectsOf: item.effectsOf } : {}) };
-    return;
-  }
-  ctx.events.push({ t: 'tileFired', player: item.player, tile: item.tile, trigger: item.trigger });
-  runEffects(ctx, effects, { self: item.player, target: null, slot: item.slot, source: item.tile, coinLoss: new Map() });
-}
-
-export function needsTarget(effects: Effect[]): boolean {
-  for (const e of effects) {
-    if ('who' in e && e.who === 'target') return true;
-    if (e.op === 'steal') return true;
-    if (e.op === 'if' && (needsTarget(e.then) || (e.else ? needsTarget(e.else) : false))) return true;
-  }
-  return false;
-}
-
-function runAttack(ctx: Ctx, attacker: number, slot: number, tile: TileId, trigger: Trigger, target: number, effectsOf?: Trigger): void {
-  const st = ctx.st;
-  const def = tileDef(st.config, tile);
-  const effects = def[effectsOf ?? trigger] ?? [];
-  // Shield: cancels the whole attack and is consumed.
-  if (getFlag(st, target, 'shielded') > 0) {
-    consumeFlag(st, target, 'shielded');
-    ctx.events.push({ t: 'attacked', attacker, target, tile, cancelled: true });
-    return;
-  }
-  ctx.events.push({ t: 'attacked', attacker, target, tile, cancelled: false });
-  ctx.events.push({ t: 'tileFired', player: attacker, tile, trigger });
-  // Defender's onTargeted tiles. `reflect` runs first; the rest after the attack.
-  const tp = st.players[target]!;
-  const defenses: { slot: number; tile: TileId; effects: Effect[] }[] = [];
-  for (let s = 1; s < tp.board.length; s++) {
-    const d = activeTile(st, target, s);
-    if (d?.onTargeted) defenses.push({ slot: s, tile: d.id, effects: d.onTargeted });
-  }
-  let reflect = 0;
-  for (const d of defenses) for (const e of d.effects) if (e.op === 'reflect') reflect += e.fraction;
-  reflect = Math.min(1, reflect);
-
-  const ec: EffectCtx = { self: attacker, target, slot, source: tile, coinLoss: new Map() };
-  runEffects(ctx, effects, ec);
-
-  const lost = ec.coinLoss.get(target) ?? 0;
-  if (reflect > 0 && lost > 0) {
-    const back = Math.floor(lost * reflect);
-    const reflector = defenses.find((d) => d.effects.some((e) => e.op === 'reflect'))!;
-    if (back > 0) {
-      ctx.events.push({ t: 'tileFired', player: target, tile: reflector.tile, trigger: 'onTargeted' });
-      changeResource(ctx, attacker, 'coins', -back, reflector.tile);
-    }
-  }
-  for (const d of defenses) {
-    const rest = d.effects.filter((e) => e.op !== 'reflect');
-    if (rest.length === 0) continue;
-    ctx.events.push({ t: 'tileFired', player: target, tile: d.tile, trigger: 'onTargeted' });
-    runEffects(ctx, rest, { self: target, target: attacker, slot: d.slot, source: d.tile, coinLoss: new Map() });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Shop phase
 
-function pay(ctx: Ctx, player: number, cost: number, source: string): void {
-  if (cost !== 0) changeResource(ctx, player, 'coins', -cost, source);
-}
-
-function buyTile(ctx: Ctx, shopIndex: number, slot: number): void {
-  const st = ctx.st;
-  const me = st.activePlayer;
-  const p = st.players[me]!;
-  const id = st.shop[shopIndex]!;
-  const def = tileDef(st.config, id);
-  pay(ctx, me, def.cost, id);
-  st.shop.splice(shopIndex, 1);
-  const old = p.board[slot];
-  if (old != null) {
-    st.discard.push(old);
-    st.roundModifiers = st.roundModifiers.filter((m) => !(m.kind === 'lock' && m.player === me && m.slot === slot));
-  }
-  p.board[slot] = id;
-  ctx.events.push({ t: 'bought', player: me, item: id, cost: def.cost, slot });
-}
-
-function buyExpansion(ctx: Ctx, shopIndex: number, afterSlot: number): void {
-  const st = ctx.st;
-  const me = st.activePlayer;
-  const p = st.players[me]!;
-  const id = st.shop[shopIndex]!;
-  const def = tileDef(st.config, id);
-  pay(ctx, me, def.cost, id);
-  st.shop.splice(shopIndex, 1);
-  st.discard.push(id);
-  p.board.splice(afterSlot + 1, 0, def.insertTile ?? null);
-  if (p.position > afterSlot) p.position += 1;
-  st.roundModifiers = st.roundModifiers.map((m) =>
-    m.kind === 'lock' && m.player === me && m.slot > afterSlot ? { ...m, slot: m.slot + 1 } : m,
-  );
-  ctx.events.push({ t: 'bought', player: me, item: id, cost: def.cost, slot: afterSlot + 1 });
-  ctx.events.push({ t: 'expanded', player: me, afterSlot, size: p.board.length });
-}
-
-function buyMod(ctx: Ctx, modId: string): void {
-  const st = ctx.st;
-  const me = st.activePlayer;
-  const def = st.config.modSet.find((m) => m.id === modId)!;
-  pay(ctx, me, def.cost, modId);
-  ctx.events.push({ t: 'bought', player: me, item: modId, cost: def.cost });
-  runEffects(ctx, def.effects, { self: me, target: null, slot: null, source: modId, coinLoss: new Map() });
-  if (def.scope !== 'round') st.players[me]!.mods.push(modId);
-}
-
-function sellTile(ctx: Ctx, slot: number): void {
-  const st = ctx.st;
-  const me = st.activePlayer;
-  const p = st.players[me]!;
-  const id = p.board[slot]!;
-  const def = tileDef(st.config, id);
-  const refund = Math.floor(def.cost * st.config.sellRefund);
-  p.board[slot] = null;
-  st.discard.push(id);
-  st.roundModifiers = st.roundModifiers.filter((m) => !(m.kind === 'lock' && m.player === me && m.slot === slot));
-  ctx.events.push({ t: 'sold', player: me, tile: id, refund });
-  if (refund > 0) changeResource(ctx, me, 'coins', refund, 'sale');
-}
 
 function afterShopAction(ctx: Ctx): void {
   ctx.st.shopActionsLeft -= 1;
@@ -508,52 +383,6 @@ function expireModifiers(st: GameState): void {
   st.roundModifiers = st.roundModifiers.filter((m) => !(m.until.round < r || (m.until.round === r && m.until.player <= p)));
 }
 
-function checkEndTrigger(st: GameState): void {
-  if (st.endTrigger) return;
-  const c = st.config;
-  const mode = c.endMode as SimEndMode;
-  if (mode === 'vpPool') {
-    let total = 0;
-    for (const p of st.players) total += p.vp;
-    if (total >= c.endValue) st.endTrigger = { reason: 'vpPool', endsAfterRound: st.round };
-  } else if (mode === 'landmarkRace') {
-    if (mostLandmarks(st) >= c.endValue) st.endTrigger = { reason: 'landmarkRace', endsAfterRound: st.round };
-  } else if (c.endMode === 'vpRace' && st.players.some((p) => p.vp >= c.endValue)) {
-    st.endTrigger = { reason: 'vpRace', endsAfterRound: st.round };
-  } else if (c.endMode === 'lapRace' && st.players.some((p) => p.laps >= c.endValue)) {
-    st.endTrigger = { reason: 'lapRace', endsAfterRound: st.round };
-  }
-}
-
-export function standings(st: GameState): Standing[] {
-  return st.players.map((p) => ({ player: p.id, vp: p.vp, coins: p.coins }));
-}
-
-/** Highest VP wins; ties break on coins, then on fewer tiles, then lower seat. */
-export function rankPlayers(st: GameState): number[] {
-  return st.players
-    .map((p) => p.id)
-    .sort((a, b) => {
-      const pa = st.players[a]!, pb = st.players[b]!;
-      if (pb.vp !== pa.vp) return pb.vp - pa.vp;
-      if (pb.coins !== pa.coins) return pb.coins - pa.coins;
-      const ta = ownedCount(st, a), tb = ownedCount(st, b);
-      if (ta !== tb) return ta - tb;
-      return a - b;
-    });
-}
-
-/** config.tileEndVp: floor(sum of owned tile costs × tileEndVp) VP per player, once, at game end. */
-function awardTileEndVp(ctx: Ctx): void {
-  const st = ctx.st;
-  if (!(st.config.tileEndVp > 0)) return;
-  for (const p of st.players) {
-    const cost = ownedCost(st, p.id);
-    // epsilon guards floor() against float error such as 0.34 × 100 = 34.00000000000001
-    const vp = Math.floor(cost * st.config.tileEndVp + 1e-9);
-    if (vp > 0) changeResource(ctx, p.id, 'vp', vp, 'endgame');
-  }
-}
 
 function endTurn(ctx: Ctx): void {
   const st = ctx.st;
