@@ -24,6 +24,12 @@ export type Metrics = {
   mods: Record<string, { buys: number; buyRate: number }>;
   attacks: { perGame: number; cancelledRate: number; attackerLift: number; targetLift: number };
   randomFloor: number | null;
+  /** Shared-board mode only (absent in loops mode so its report is unchanged). Per game. */
+  tollsPerGame?: number;
+  tollCoinsPerGame?: number;
+  cornerIncomePerGame?: number;
+  /** Shared mode: tileFired events per game by tile class (civic, private, toll, public) and 'landmark'. */
+  firesByClass?: Record<string, number>;
   lopsided: { seed: number; winner: number; winnerBot: string; margin: number }[];
 };
 
@@ -80,6 +86,13 @@ export function computeMetrics(records: GameRecord[], config: GameConfig): Metri
   let cancelled = 0;
   const vpAttackers: number[] = [], vpNonAttackers: number[] = [], vpTargets: number[] = [], vpNonTargets: number[] = [];
   const lopsided: Metrics['lopsided'] = [];
+  const shared = config.boardMode === 'shared';
+  let tollCount = 0, tollCoins = 0, cornerIncome = 0;
+  const fires: Record<string, number> = { civic: 0, private: 0, toll: 0, public: 0, landmark: 0 };
+  const classOf = new Map<string, string>([
+    ...config.tileSet.map((t) => [t.id, t.class ?? ''] as [string, string]),
+    ...config.landmarkSet.map((l) => [l.id, 'landmark'] as [string, string]),
+  ]);
 
   for (const rec of records) {
     for (let seat = 0; seat < players; seat++) {
@@ -132,6 +145,14 @@ export function computeMetrics(records: GameRecord[], config: GameConfig): Metri
         }
       } else if (e.t === 'sold') {
         if (tiles[e.tile]) tiles[e.tile]!.sells++;
+      } else if (e.t === 'toll') {
+        tollCount++;
+        tollCoins += e.amount;
+      } else if (e.t === 'corner') {
+        cornerIncome += e.income;
+      } else if (e.t === 'tileFired') {
+        const cls = classOf.get(e.tile);
+        if (cls && cls in fires) fires[cls]!++;
       } else if (e.t === 'attacked') {
         attackCount++;
         if (e.cancelled) cancelled++;
@@ -188,6 +209,12 @@ export function computeMetrics(records: GameRecord[], config: GameConfig): Metri
       targetLift: vpTargets.length && vpNonTargets.length ? mean(vpTargets) - mean(vpNonTargets) : 0,
     },
     randomFloor: byBot['random'] ? byBot['random'].rate : null,
+    ...(shared ? {
+      tollsPerGame: games ? tollCount / games : 0,
+      tollCoinsPerGame: games ? tollCoins / games : 0,
+      cornerIncomePerGame: games ? cornerIncome / games : 0,
+      firesByClass: Object.fromEntries(Object.entries(fires).map(([k, v]) => [k, games ? v / games : 0])),
+    } : {}),
     lopsided: lopsided.slice(0, 10),
   };
 }
@@ -216,8 +243,10 @@ export function flagProblems(m: Metrics, config: GameConfig, opts: { placementLi
     if (t.ownerGames >= 20 && t.lift > 20) out.push(`tile ${id} win lift +${t.lift.toFixed(1)} pts (> +20)`);
     if (t.ownerGames >= 20 && t.lift < -10) out.push(`tile ${id} win lift ${t.lift.toFixed(1)} pts (< -10)`);
   }
-  if (m.attacks.perGame < 1) out.push(`attacks per game ${m.attacks.perGame.toFixed(2)} (< 1, useless)`);
-  if (m.attacks.targetLift < -8) out.push(`attack target lift ${m.attacks.targetLift.toFixed(1)} VP (< -8, oppressive)`);
+  if (config.boardMode !== 'shared') { // shared mode has no attack class; its balance targets are not set yet
+    if (m.attacks.perGame < 1) out.push(`attacks per game ${m.attacks.perGame.toFixed(2)} (< 1, useless)`);
+    if (m.attacks.targetLift < -8) out.push(`attack target lift ${m.attacks.targetLift.toFixed(1)} VP (< -8, oppressive)`);
+  }
   if (opts.placementLift != null && opts.placementLift < 3) out.push(`placement lift ${opts.placementLift.toFixed(1)} pts (< 3, cosmetic)`);
   if (m.randomFloor != null && fourMix && m.randomFloor > 0.2) out.push(`random wins ${pct(m.randomFloor)} (> 20%)`);
   return out;

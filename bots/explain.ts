@@ -2,7 +2,8 @@
 // `decide` both use (so they cannot drift), candidate ordering, and the
 // short labels and number formats used in `why` lines.
 import type { Action, GameState } from '../engine/types.ts';
-import { modName, tileName } from '../engine/describe.ts';
+import { tileAt } from '../engine/board.ts';
+import { itemName as tileName, modName } from '../engine/describe.ts';
 import type { Candidate, Decision } from './types.ts';
 
 export const MAX_CANDIDATES = 6;
@@ -91,8 +92,9 @@ export function shortLabel(state: GameState, a: Action): string {
     case 'buyTile': return `${tileName(cfg, state.shop[a.shopIndex]!)} → slot ${a.slot}`;
     case 'buyExpansion': return `${tileName(cfg, state.shop[a.shopIndex]!)} → after slot ${a.afterSlot}`;
     case 'buyMod': return modName(cfg, a.modId);
+    case 'buyLandmark': return `${tileName(cfg, a.landmarkId)} landmark → slot ${a.slot}`;
     case 'sellTile': {
-      const id = state.players[state.activePlayer]!.board[a.slot];
+      const id = tileAt(state, state.activePlayer, a.slot);
       return `Sell ${id != null ? tileName(cfg, id) : 'tile'} from slot ${a.slot}`;
     }
     case 'pass': return 'Pass';

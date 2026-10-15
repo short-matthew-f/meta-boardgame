@@ -1,0 +1,10 @@
+[
+  {"id": "cathedral", "name": "Cathedral", "cost": 12, "effects": [{"op": "gain", "res": "vp", "amount": 3}]},
+  {"id": "mint", "name": "Mint", "cost": 10, "effects": [{"op": "gain", "res": "coins", "amount": {"ownedWithClass": "civic", "per": 1}}], "passive": {"civicBonus": 1}},
+  {"id": "city-walls", "name": "City Walls", "cost": 10, "effects": [{"op": "gain", "res": "vp", "amount": 1}], "passive": {"noReplace": true}},
+  {"id": "harbour-master", "name": "Harbour Master", "cost": 10, "effects": [{"op": "gain", "res": "coins", "amount": 2}], "passive": {"tollFree": true}},
+  {"id": "observatory", "name": "Observatory", "cost": 11, "effects": [{"op": "gain", "res": "coins", "amount": 2}], "passive": {"dieSides": 8}},
+  {"id": "guildhall", "name": "Guildhall", "cost": 10, "effects": [{"op": "gain", "res": "vp", "amount": 1}], "passive": {"shopDiscount": 1}},
+  {"id": "archive", "name": "Archive", "cost": 12, "effects": [{"op": "gain", "res": "vp", "amount": 1}], "passive": {"endGameVpPerTiles": 2}},
+  {"id": "colosseum", "name": "Colosseum", "cost": 14, "effects": [{"op": "gain", "res": "vp", "amount": 2}], "passive": {"visitorLandVp": 2}}
+]

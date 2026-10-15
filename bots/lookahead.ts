@@ -5,7 +5,8 @@
 import type { Action, GameState, PlayerState } from '../engine/types.ts';
 import type { Rng } from '../engine/rng.ts';
 import { legalActions, previewRoll, step } from '../engine/engine.ts';
-import { diceOutcomes, effectiveDice, landingDistribution, tileDef } from '../engine/board.ts';
+import { diceOutcomes, effectiveDice, landingDistribution, ownedCost, tileDef } from '../engine/board.ts';
+import { itemCost, sharedSize } from '../engine/sharedBoard.ts';
 import type { Bot, Decision } from './types.ts';
 import { buildDecision, onlyOption, pickBest, sgn, shortLabel } from './explain.ts';
 
@@ -14,9 +15,7 @@ const COIN_WEIGHT = 0.5;
 const ASSET_WEIGHT = 0.45;
 
 function material(s: GameState, p: PlayerState): number {
-  let assets = 0;
-  for (const id of p.board) if (id != null) assets += tileDef(s.config, id).cost;
-  return p.vp + p.coins * COIN_WEIGHT + assets * ASSET_WEIGHT;
+  return p.vp + p.coins * COIN_WEIGHT + ownedCost(s, p.id) * ASSET_WEIGHT;
 }
 
 function differential(s: GameState, me: number): number {
@@ -91,11 +90,19 @@ function evaluate(state: GameState, legal: Action[]): Evaluation {
 
   // Shop phase: prune buyTile to the best slot per tile by landing probability
   const p = state.players[me]!;
-  const dist = landingDistribution(p.position, effectiveDice(state, me), p.board.length);
+  const dist = landingDistribution(p.position, effectiveDice(state, me), state.shared ? sharedSize(state.config) : p.board.length);
   const bestSlot = new Map<number, { action: Action; score: number }>();
+  const bestShared = new Map<string, { action: Action; score: number }>();
   const pruned: Action[] = [];
   for (const a of legal) {
-    if (a.type === 'buyTile') {
+    if (state.shared && (a.type === 'buyTile' || a.type === 'buyLandmark')) {
+      // Shared-board placement is not designed yet: one slot per tile, preferring an empty one.
+      const at = state.shared.slots[a.slot]!.tile;
+      const score = at == null ? 0.001 : -0.05 * itemCost(state.config, at);
+      const key = a.type === 'buyTile' ? `tile${a.shopIndex}` : `landmark${a.landmarkId}`;
+      const cur = bestShared.get(key);
+      if (!cur || score > cur.score) bestShared.set(key, { action: a, score });
+    } else if (a.type === 'buyTile') {
       const def = tileDef(state.config, state.shop[a.shopIndex]!);
       const old = p.board[a.slot];
       const score = (def.onLand ? (dist.get(a.slot) ?? 0) : 0) - (old != null ? 0.05 * tileDef(state.config, old).cost : 0) + (old == null ? 0.001 : 0);
@@ -106,6 +113,7 @@ function evaluate(state: GameState, legal: Action[]): Evaluation {
     } else pruned.push(a);
   }
   for (const { action } of bestSlot.values()) pruned.push(action);
+  for (const { action } of bestShared.values()) pruned.push(action);
 
   const ends: boolean[] = [];
   const values = pruned.map((a) => {

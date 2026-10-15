@@ -4,14 +4,21 @@
 // state.rngState so (seed, actions[]) replays exactly.
 
 import type {
-  Action, Amount, Cond, Effect, EndMode, Event, GameConfig, GameState, Modifier, PendingChoice,
-  PlayerState, QueuedTrigger, RollContext, SimEndMode, Standing, StepResult, TileId, Trigger, Who,
+  Action, Effect, EndMode, GameConfig, GameState, PendingChoice, PlayerState, QueuedTrigger, RollContext,
+  SimEndMode, Standing, StepResult, TileId, Trigger,
 } from './types.ts';
 import { rngInt, rngShuffle, seedToState } from './rng.ts';
+import { activeTile, effectiveDice, hasTag, isLocked, ownedCost, ownedCount, tileDef } from './board.ts';
 import {
-  activeTile, countAdjacentWithTag, countOwnedWithTag, effectiveDice, hasTag, isLocked,
-  ownedTileCount, tileDef,
-} from './board.ts';
+  type Ctx, type EffectCtx, changeResource, consumeFlag, enqueueForwardMove, getFlag, runEffects,
+} from './effects.ts';
+import {
+  awardPassiveEndVp, mostLandmarks, sharedBuyActions, sharedBuyLandmark, sharedBuyTile, sharedForwardMove,
+  sharedSellActions, sharedSellTile,
+} from './shared.ts';
+import { makeSharedSlots } from './sharedBoard.ts';
+
+export { evalAmount, getFlag } from './effects.ts';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -19,6 +26,13 @@ import {
 export const BASE_CONFIG: Omit<GameConfig, 'tileSet' | 'modSet'> = {
   players: 4,
   boardSize: 8,
+  boardMode: 'loops',
+  sideLength: 10,
+  cornerIncome: 2,
+  startDice: [{ sides: 6 }],
+  buyoutRefund: 0.5,
+  protectOwnSide: false,
+  landmarkSet: [],
   startCoins: 5,
   lapIncome: 3,
   shopSize: 6,
@@ -36,6 +50,8 @@ export const BASE_CONFIG: Omit<GameConfig, 'tileSet' | 'modSet'> = {
 
 /** The experimental `vpPool` end mode, typed as EndMode (see SimEndMode in types.ts). */
 export const VP_POOL_MODE = 'vpPool' as EndMode;
+/** The sim-only `landmarkRace` end mode (shared board): endValue is the landmarks a player must own. */
+export const LANDMARK_RACE_MODE = 'landmarkRace' as EndMode;
 
 export function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
   return { ...BASE_CONFIG, tileSet: [], modSet: [], ...overrides };
@@ -56,16 +72,20 @@ export function createGame(config: GameConfig, seed: number): GameState {
   let bag: TileId[];
   [rng, bag] = rngShuffle(rng, bagIds);
   const shop = bag.splice(0, config.shopSize);
+  const shared = config.boardMode === 'shared';
+  if (shared && config.sideLength < 2) throw new Error('sideLength must be at least 2');
   const players: PlayerState[] = [];
   for (let i = 0; i < config.players; i++) {
     players.push({
       id: i,
-      board: new Array<TileId | null>(config.boardSize).fill(null),
+      board: shared ? [] : new Array<TileId | null>(config.boardSize).fill(null),
       position: 0,
       coins: config.startCoins,
       vp: 0,
       laps: 0,
-      dice: [{ sides: 6 }],
+      cornersPassed: 0,
+      landmarks: [],
+      dice: config.startDice.map((d) => ({ ...d })),
       mods: [],
       flags: {},
     });
@@ -78,6 +98,7 @@ export function createGame(config: GameConfig, seed: number): GameState {
     phase: 'roll',
     shopActionsLeft: 0,
     players,
+    ...(shared ? { shared: { slots: makeSharedSlots(config) } } : {}),
     shop,
     bag,
     discard: [],
@@ -99,8 +120,10 @@ export function cloneState(s: GameState): GameState {
       board: p.board.slice(),
       dice: p.dice.map((d) => ({ ...d })),
       mods: p.mods.slice(),
+      landmarks: p.landmarks.slice(),
       flags: { ...p.flags },
     })),
+    ...(s.shared ? { shared: { slots: s.shared.slots.map((x) => ({ ...x })) } } : {}),
     shop: s.shop.slice(),
     bag: s.bag.slice(),
     discard: s.discard.slice(),
@@ -145,7 +168,8 @@ export function legalActions(state: GameState): Action[] {
   const p = state.players[me]!;
   if (state.shopActionsLeft > 0) {
     const size = p.board.length;
-    for (let i = 0; i < state.shop.length; i++) {
+    if (state.shared) out.push(...sharedBuyActions(state));
+    else for (let i = 0; i < state.shop.length; i++) {
       const def = tileDef(state.config, state.shop[i]!);
       if (def.cost > p.coins) continue;
       if (hasTag(def, 'expansion')) {
@@ -159,7 +183,8 @@ export function legalActions(state: GameState): Action[] {
       if ((m.scope === 'persistent' || m.scope === 'consumable') && p.mods.includes(m.id)) continue;
       out.push({ type: 'buyMod', modId: m.id });
     }
-    for (let s = 1; s < size; s++) if (p.board[s] != null) out.push({ type: 'sellTile', slot: s });
+    if (state.shared) out.push(...sharedSellActions(state));
+    else for (let s = 1; s < size; s++) if (p.board[s] != null) out.push({ type: 'sellTile', slot: s });
   }
   out.push({ type: 'pass' });
   return out;
@@ -167,8 +192,6 @@ export function legalActions(state: GameState): Action[] {
 
 // ---------------------------------------------------------------------------
 // Step
-
-type Ctx = { st: GameState; events: Event[]; forcedDice: number[] | null; allowReroll: boolean };
 
 export function step(state: GameState, action: Action): StepResult {
   const legal = legalActions(state);
@@ -209,7 +232,12 @@ function applyAction(ctx: Ctx, action: Action): void {
       return;
     }
     case 'buyTile':
-      buyTile(ctx, action.shopIndex, action.slot);
+      if (st.shared) sharedBuyTile(ctx, action.shopIndex, action.slot);
+      else buyTile(ctx, action.shopIndex, action.slot);
+      afterShopAction(ctx);
+      return;
+    case 'buyLandmark':
+      sharedBuyLandmark(ctx, action.landmarkId, action.slot);
       afterShopAction(ctx);
       return;
     case 'buyExpansion':
@@ -221,7 +249,8 @@ function applyAction(ctx: Ctx, action: Action): void {
       afterShopAction(ctx);
       return;
     case 'sellTile':
-      sellTile(ctx, action.slot);
+      if (st.shared) sharedSellTile(ctx, action.slot);
+      else sellTile(ctx, action.slot);
       afterShopAction(ctx);
       return;
     case 'pass':
@@ -263,41 +292,13 @@ function doRoll(ctx: Ctx): void {
 
 /** Move the active player's token forward, queue everything it triggers, then resolve. */
 function applyMove(ctx: Ctx, by: number): void {
+  if (ctx.st.shared) {
+    sharedForwardMove(ctx, ctx.st.activePlayer, by);
+    finishRoll(ctx);
+    return;
+  }
   enqueueForwardMove(ctx, ctx.st.activePlayer, by);
   drainQueue(ctx);
-}
-
-function enqueueForwardMove(ctx: Ctx, player: number, by: number): void {
-  const st = ctx.st;
-  const p = st.players[player]!;
-  const size = p.board.length;
-  const from = p.position;
-  const q = st.pending!.queue;
-  let passedStart = false;
-  for (let i = 1; i <= by; i++) {
-    const slot = (from + i) % size;
-    if (slot === 0) {
-      passedStart = true;
-      q.push({ kind: 'lapIncome', player });
-      for (let s = 1; s < size; s++) {
-        const id = p.board[s];
-        if (id != null && tileDef(st.config, id).onLap) q.push({ kind: 'tile', player, slot: s, tile: id, trigger: 'onLap' });
-      }
-    }
-    if (i < by && slot !== 0) {
-      const id = p.board[slot];
-      if (id == null) continue;
-      const def = tileDef(st.config, id);
-      if (def.onPass) q.push({ kind: 'tile', player, slot, tile: id, trigger: 'onPass' });
-      else if (st.config.fireOnPass && def.onLand && !hasTag(def, 'mover')) {
-        q.push({ kind: 'tile', player, slot, tile: id, trigger: 'onPass', effectsOf: 'onLand' });
-      }
-    }
-  }
-  const to = (from + by) % size;
-  p.position = to;
-  ctx.events.push({ t: 'moved', player, from, to, passedStart });
-  q.push({ kind: 'land', player, slot: to });
 }
 
 function drainQueue(ctx: Ctx): void {
@@ -327,6 +328,13 @@ function drainQueue(ctx: Ctx): void {
     resolveTileTrigger(ctx, item);
   }
   if (ctxPending.choice) return;
+  finishRoll(ctx);
+}
+
+/** After a roll's moves and triggers: roll again if a tile said so, else open the shop. */
+function finishRoll(ctx: Ctx): void {
+  const st = ctx.st;
+  const ctxPending = st.pending!;
   if (ctxPending.rollAgain) {
     ctxPending.rollAgain = false;
     ctxPending.chain += 1;
@@ -404,203 +412,6 @@ function runAttack(ctx: Ctx, attacker: number, slot: number, tile: TileId, trigg
     ctx.events.push({ t: 'tileFired', player: target, tile: d.tile, trigger: 'onTargeted' });
     runEffects(ctx, rest, { self: target, target: attacker, slot: d.slot, source: d.tile, coinLoss: new Map() });
   }
-}
-
-// ---------------------------------------------------------------------------
-// Effect DSL
-
-type EffectCtx = {
-  self: number;
-  target: number | null;
-  slot: number | null; // slot of the firing tile on self's board, if any
-  source: TileId | string;
-  coinLoss: Map<number, number>; // coins lost per player during this list (for reflect)
-};
-
-function resolveWho(ctx: Ctx, who: Who, ec: EffectCtx): number[] {
-  const n = ctx.st.players.length;
-  switch (who) {
-    case 'self': return [ec.self];
-    case 'target':
-      if (ec.target == null) throw new Error('effect needs a target but none was chosen');
-      return [ec.target];
-    case 'others': return Array.from({ length: n }, (_, i) => i).filter((i) => i !== ec.self);
-    case 'all': return Array.from({ length: n }, (_, i) => i);
-  }
-}
-
-export function evalAmount(st: GameState, amount: Amount, ec: { self: number; slot: number | null }): number {
-  if (typeof amount === 'number') return amount;
-  if ('adjacentWithTag' in amount) {
-    if (ec.slot == null) return 0;
-    return Math.floor(countAdjacentWithTag(st, ec.self, ec.slot, amount.adjacentWithTag) * amount.per);
-  }
-  if ('ownedWithTag' in amount) return Math.floor(countOwnedWithTag(st, ec.self, amount.ownedWithTag) * amount.per);
-  return Math.floor(st.players[ec.self]!.laps * amount.per);
-}
-
-function evalCond(st: GameState, cond: Cond, ec: EffectCtx): boolean {
-  if ('flag' in cond) {
-    const v = getFlag(st, ec.self, cond.flag);
-    return cond.op === '>' ? v > cond.value : v === cond.value;
-  }
-  if ('adjacentWithTag' in cond) {
-    if (ec.slot == null) return false;
-    return countAdjacentWithTag(st, ec.self, ec.slot, cond.adjacentWithTag) >= cond.min;
-  }
-  const total = st.pending?.lastTotal ?? 0;
-  return cond.dieTotal === '>=' ? total >= cond.value : total <= cond.value;
-}
-
-export function getFlag(st: GameState, player: number, flag: string): number {
-  const m = st.roundModifiers.find((x) => x.kind === 'flag' && x.player === player && x.flag === flag);
-  if (m && m.kind === 'flag') return m.value;
-  return st.players[player]!.flags[flag] ?? 0;
-}
-
-function consumeFlag(st: GameState, player: number, flag: string): void {
-  st.roundModifiers = st.roundModifiers.filter((x) => !(x.kind === 'flag' && x.player === player && x.flag === flag));
-  if (st.players[player]!.flags[flag] != null) st.players[player]!.flags[flag] = 0;
-}
-
-function changeResource(ctx: Ctx, player: number, res: 'coins' | 'vp', delta: number, source: string): number {
-  const p = ctx.st.players[player]!;
-  const before = p[res];
-  const after = Math.max(0, before + delta);
-  const applied = after - before;
-  if (applied === 0) return 0;
-  p[res] = after;
-  ctx.events.push({ t: 'resource', player, res, delta: applied, source });
-  return applied;
-}
-
-function untilRef(st: GameState, rounds: number) {
-  return { round: st.round + rounds, player: st.activePlayer };
-}
-
-function runEffects(ctx: Ctx, effects: Effect[], ec: EffectCtx): void {
-  const st = ctx.st;
-  for (const e of effects) {
-    switch (e.op) {
-      case 'gain': {
-        changeResource(ctx, ec.self, e.res, evalAmount(st, e.amount, ec), ec.source);
-        break;
-      }
-      case 'lose': {
-        const amt = evalAmount(st, e.amount, ec);
-        for (const q of resolveWho(ctx, e.who, ec)) {
-          const applied = changeResource(ctx, q, e.res, -amt, ec.source);
-          if (e.res === 'coins') ec.coinLoss.set(q, (ec.coinLoss.get(q) ?? 0) - applied);
-        }
-        break;
-      }
-      case 'steal': {
-        const [t] = resolveWho(ctx, 'target', ec);
-        const amt = Math.min(evalAmount(st, e.amount, ec), st.players[t!]![e.res]);
-        if (amt > 0) {
-          changeResource(ctx, t!, e.res, -amt, ec.source);
-          changeResource(ctx, ec.self, e.res, amt, ec.source);
-          if (e.res === 'coins') ec.coinLoss.set(t!, (ec.coinLoss.get(t!) ?? 0) + amt);
-        }
-        break;
-      }
-      case 'move': {
-        const by = evalAmount(st, e.by, ec);
-        for (const q of resolveWho(ctx, e.who, ec)) moveToken(ctx, q, by);
-        break;
-      }
-      case 'teleport': {
-        for (const q of resolveWho(ctx, e.who, ec)) {
-          const p = st.players[q]!;
-          const from = p.position;
-          let to = 0;
-          if (e.to === 'random') [st.rngState, to] = rngInt(st.rngState, p.board.length);
-          p.position = to;
-          ctx.events.push({ t: 'moved', player: q, from, to, passedStart: false });
-        }
-        break;
-      }
-      case 'rollAgain': {
-        if (st.pending) st.pending.rollAgain = true;
-        break;
-      }
-      case 'setFlag': {
-        for (const q of resolveWho(ctx, e.who, ec)) {
-          if (e.rounds != null) {
-            st.roundModifiers = st.roundModifiers.filter((m) => !(m.kind === 'flag' && m.player === q && m.flag === e.flag));
-            st.roundModifiers.push({ kind: 'flag', player: q, flag: e.flag, value: e.value, until: untilRef(st, e.rounds) });
-          } else {
-            st.players[q]!.flags[e.flag] = e.value;
-          }
-        }
-        break;
-      }
-      case 'lockTile': {
-        for (const q of resolveWho(ctx, e.who, ec)) {
-          const p = st.players[q]!;
-          const slots: number[] = [];
-          for (let s = 1; s < p.board.length; s++) if (p.board[s] != null && !isLocked(st, q, s)) slots.push(s);
-          if (slots.length === 0) continue;
-          let i: number;
-          [st.rngState, i] = rngInt(st.rngState, slots.length);
-          const slot = slots[i]!;
-          st.roundModifiers.push({ kind: 'lock', player: q, slot, until: untilRef(st, e.rounds) });
-          ctx.events.push({ t: 'locked', player: q, slot, tile: p.board[slot]!, by: ec.self });
-        }
-        break;
-      }
-      case 'reflect':
-        break; // handled by runAttack
-      case 'if': {
-        if (evalCond(st, e.cond, ec)) runEffects(ctx, e.then, ec);
-        else if (e.else) runEffects(ctx, e.else, ec);
-        break;
-      }
-      case 'addDie': {
-        st.players[ec.self]!.dice.push({ sides: e.sides });
-        break;
-      }
-      case 'setDice': {
-        for (const q of resolveWho(ctx, e.who, ec)) {
-          st.roundModifiers = st.roundModifiers.filter((m) => !(m.kind === 'dice' && m.player === q));
-          st.roundModifiers.push({ kind: 'dice', player: q, sides: e.sides, until: untilRef(st, e.rounds) });
-        }
-        break;
-      }
-      case 'replaceDie': {
-        const dice = st.players[ec.self]!.dice;
-        const i = dice.findIndex((d) => d.sides === e.from);
-        if (i >= 0) dice[i] = { sides: e.to };
-        break;
-      }
-    }
-  }
-}
-
-/**
- * Move a token by `by` slots. The active player's own forward moves trigger
- * passes, laps and landings like a roll; every other move (backward, or of a
- * non-active player) just relocates the token.
- */
-function moveToken(ctx: Ctx, player: number, by: number): void {
-  const st = ctx.st;
-  if (by === 0) return;
-  const p = st.players[player]!;
-  const size = p.board.length;
-  if (player === st.activePlayer && by > 0 && st.pending) {
-    st.pending.chain += 1;
-    if (st.pending.chain > st.config.maxTriggerChain) {
-      const from = p.position;
-      p.position = (from + by) % size;
-      ctx.events.push({ t: 'moved', player, from, to: p.position, passedStart: false });
-      return;
-    }
-    enqueueForwardMove(ctx, player, by);
-    return;
-  }
-  const from = p.position;
-  p.position = (((from + by) % size) + size) % size;
-  ctx.events.push({ t: 'moved', player, from, to: p.position, passedStart: false });
 }
 
 // ---------------------------------------------------------------------------
@@ -705,6 +516,8 @@ function checkEndTrigger(st: GameState): void {
     let total = 0;
     for (const p of st.players) total += p.vp;
     if (total >= c.endValue) st.endTrigger = { reason: 'vpPool', endsAfterRound: st.round };
+  } else if (mode === 'landmarkRace') {
+    if (mostLandmarks(st) >= c.endValue) st.endTrigger = { reason: 'landmarkRace', endsAfterRound: st.round };
   } else if (c.endMode === 'vpRace' && st.players.some((p) => p.vp >= c.endValue)) {
     st.endTrigger = { reason: 'vpRace', endsAfterRound: st.round };
   } else if (c.endMode === 'lapRace' && st.players.some((p) => p.laps >= c.endValue)) {
@@ -724,7 +537,7 @@ export function rankPlayers(st: GameState): number[] {
       const pa = st.players[a]!, pb = st.players[b]!;
       if (pb.vp !== pa.vp) return pb.vp - pa.vp;
       if (pb.coins !== pa.coins) return pb.coins - pa.coins;
-      const ta = ownedTileCount(pa), tb = ownedTileCount(pb);
+      const ta = ownedCount(st, a), tb = ownedCount(st, b);
       if (ta !== tb) return ta - tb;
       return a - b;
     });
@@ -735,8 +548,7 @@ function awardTileEndVp(ctx: Ctx): void {
   const st = ctx.st;
   if (!(st.config.tileEndVp > 0)) return;
   for (const p of st.players) {
-    let cost = 0;
-    for (const id of p.board) if (id != null) cost += tileDef(st.config, id).cost;
+    const cost = ownedCost(st, p.id);
     // epsilon guards floor() against float error such as 0.34 × 100 = 34.00000000000001
     const vp = Math.floor(cost * st.config.tileEndVp + 1e-9);
     if (vp > 0) changeResource(ctx, p.id, 'vp', vp, 'endgame');
@@ -765,7 +577,10 @@ function endTurn(ctx: Ctx): void {
   if (st.endTrigger && st.round >= st.endTrigger.endsAfterRound) reason = st.endTrigger.reason;
   else if (st.round >= st.config.maxRounds) reason = 'maxRounds';
   // End-of-game VP lands before the final roundEnded, so standings, ranking and metrics all see it.
-  if (reason) awardTileEndVp(ctx);
+  if (reason) {
+    awardTileEndVp(ctx);
+    if (st.shared) awardPassiveEndVp(ctx);
+  }
   ctx.events.push({ t: 'roundEnded', round: st.round, standings: standings(st) });
   if (reason) {
     st.phase = 'ended';

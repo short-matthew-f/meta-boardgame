@@ -1,14 +1,15 @@
 // Small CLI over the batch runner. No framework.
 //   npm run sim -- batch   [--games N] [--seed S] [--lineup a,b,c,d] [--endMode m] [--endValue v] [--no-rotate] [--json]
 //                          [--fireOnPass] [--landBonus N] [--tileEndVp X] [--tiles superlinear]   (experimental variants, off by default)
-//                          endMode is turnCap, vpRace, lapRace or vpPool (endValue = total VP pool)
+//                          endMode is turnCap, vpRace, lapRace, vpPool (endValue = total VP pool) or landmarkRace (endValue = landmarks needed)
+//                          [--board loops|shared] [--sideLength N] [--dice 2d6]   (shared board: one loop for everyone, owned tiles; --dice applies to both modes)
 //   npm run sim -- balance [--games N] [--seed S]
 //   npm run sim -- replay  --seed S [--lineup a,b,c,d] [--endMode m] [--endValue v]
 import { parseArgs } from 'node:util';
-import type { EndMode } from '../engine/types.ts';
+import type { DieSpec, EndMode } from '../engine/types.ts';
 import { SUPERLINEAR_TILES } from '../tiles/index.ts';
 import { describeEvent } from '../engine/describe.ts';
-import { batch, DEFAULT_SPEC, placementValue, type BatchReport, type BatchSpec } from './batch.ts';
+import { batch, DEFAULT_SPEC, parseDice, placementValue, type BatchReport, type BatchSpec } from './batch.ts';
 import { pct } from './metrics.ts';
 import { playGame } from './runner.ts';
 import { botByName } from '../bots/index.ts';
@@ -29,6 +30,9 @@ const { values, positionals } = parseArgs({
     'no-rotate': { type: 'boolean' },
     json: { type: 'boolean' },
     players: { type: 'string' },
+    board: { type: 'string' },
+    sideLength: { type: 'string' },
+    dice: { type: 'string' },
   },
 });
 
@@ -49,7 +53,14 @@ function specFromArgs(): Partial<BatchSpec> {
     if (values.tiles !== 'superlinear' && values.tiles !== 'starter') throw new Error(`unknown --tiles ${values.tiles}; use starter or superlinear`);
     if (values.tiles === 'superlinear') spec.config!.tileSet = SUPERLINEAR_TILES;
   }
-  if (values.endMode && !['turnCap', 'vpRace', 'lapRace', 'vpPool'].includes(values.endMode)) throw new Error(`unknown --endMode ${values.endMode}`);
+  if (values.endMode && !['turnCap', 'vpRace', 'lapRace', 'vpPool', 'landmarkRace'].includes(values.endMode)) throw new Error(`unknown --endMode ${values.endMode}`);
+  if (values.endMode === 'landmarkRace' && !values.endValue) spec.config!.endValue = 3;
+  if (values.board) {
+    if (values.board !== 'loops' && values.board !== 'shared') throw new Error(`unknown --board ${values.board}; use loops or shared`);
+    spec.config!.boardMode = values.board;
+  }
+  if (values.sideLength) spec.config!.sideLength = Number(values.sideLength);
+  if (values.dice) spec.config!.startDice = parseDice(values.dice);
   return spec;
 }
 
@@ -70,7 +81,12 @@ function printReport(r: BatchReport): void {
   const g = m.gameLength;
   console.log(`\nGame length: mean ${g.mean.toFixed(1)}  p10 ${g.p10}  p50 ${g.p50}  p90 ${g.p90}  min ${g.min}  max ${g.max}  · ended by ${Object.entries(g.byReason).map(([k, v]) => `${k}=${v}`).join(' ')}`);
   console.log(`Decided by: median round ${m.decidedBy.medianRound} (${pct(m.decidedBy.medianFraction)} of game length)`);
-  console.log(`Attacks: ${m.attacks.perGame.toFixed(2)} per game, ${pct(m.attacks.cancelledRate)} cancelled, attacker lift ${m.attacks.attackerLift.toFixed(1)} VP, target lift ${m.attacks.targetLift.toFixed(1)} VP`);
+  if (m.firesByClass) {
+    console.log(`Tolls: ${m.tollsPerGame!.toFixed(2)} per game, ${m.tollCoinsPerGame!.toFixed(2)} coins paid per game · corner income ${m.cornerIncomePerGame!.toFixed(1)} coins per game`);
+    console.log(`Fires per game by class: ${Object.entries(m.firesByClass).map(([k, v]) => `${k} ${v.toFixed(1)}`).join('  ')}`);
+  } else {
+    console.log(`Attacks: ${m.attacks.perGame.toFixed(2)} per game, ${pct(m.attacks.cancelledRate)} cancelled, attacker lift ${m.attacks.attackerLift.toFixed(1)} VP, target lift ${m.attacks.targetLift.toFixed(1)} VP`);
+  }
   if (m.randomFloor != null) console.log(`Random floor: ${pct(m.randomFloor)}`);
   console.log('\nTiles');
   console.log(table(

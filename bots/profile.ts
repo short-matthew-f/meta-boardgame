@@ -42,7 +42,7 @@ export function staticValue(def: TileDef): { coins: number; vp: number } {
   const walk = (effects: Effect[] | undefined) => {
     if (!effects) return;
     for (const e of effects) {
-      if (e.op === 'gain' || e.op === 'steal') {
+      if ((e.op === 'gain' && (e.who == null || e.who === 'self')) || e.op === 'steal') {
         const n = typeof e.amount === 'number' ? e.amount : e.amount.per * ('laps' in e.amount ? 4 : 1);
         out[e.res] += n;
       } else if (e.op === 'if') {
@@ -54,6 +54,7 @@ export function staticValue(def: TileDef): { coins: number; vp: number } {
   walk(def.onLand);
   walk(def.onPass);
   walk(def.onLap);
+  walk(def.effects);
   return out;
 }
 
@@ -69,6 +70,7 @@ function leaderBy(state: GameState, me: number, key: 'coins' | 'vp'): number {
 
 /** Raw landing/adjacency measure behind the placement term (before `placementWeight`). */
 function placementRaw(state: GameState, me: number, slot: number, def: TileDef, placement: Placement, mass: () => Map<number, number>): number {
+  if (state.shared) return 0; // shared-board placement is not designed yet: no placement term
   switch (placement) {
     case 'likely': {
       if (!def.onLand) return 0;

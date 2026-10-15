@@ -1,5 +1,6 @@
 // Loop-board helpers shared by the engine, bots and metrics.
 import type { DieSpec, GameConfig, GameState, PlayerState, Tag, TileDef, TileId } from './types.ts';
+import { ownedAt, ownedSharedCount, ownedSharedCost, passiveDieSides } from './sharedBoard.ts';
 
 export function tileDef(config: GameConfig, id: TileId): TileDef {
   const def = config.tileSet.find((t) => t.id === id);
@@ -52,11 +53,33 @@ export function ownedTileCount(p: PlayerState): number {
   return p.board.filter((t) => t != null).length;
 }
 
+/** Id of the tile (or shared-mode landmark) `player` has at `slot`, else null. Works in both board modes. */
+export function tileAt(state: GameState, player: number, slot: number): TileId | null {
+  return state.shared ? ownedAt(state, player, slot) : (state.players[player]!.board[slot] ?? null);
+}
+
+/** Tiles `player` owns, in either board mode (shared mode counts landmarks too). */
+export function ownedCount(state: GameState, player: number): number {
+  return state.shared ? ownedSharedCount(state, player) : ownedTileCount(state.players[player]!);
+}
+
+/** Sum of the printed costs of everything `player` owns, in either board mode. */
+export function ownedCost(state: GameState, player: number): number {
+  if (state.shared) return ownedSharedCost(state, player);
+  let n = 0;
+  for (const id of state.players[player]!.board) if (id != null) n += tileDef(state.config, id).cost;
+  return n;
+}
+
 /** The dice a player will actually roll, after round-scoped dice modifiers. */
 export function effectiveDice(state: GameState, player: number): DieSpec[] {
   const p = state.players[player]!;
   const mod = state.roundModifiers.find((m) => m.kind === 'dice' && m.player === player);
   if (mod && mod.kind === 'dice') return p.dice.map(() => ({ sides: mod.sides }));
+  if (state.shared) {
+    const sides = passiveDieSides(state, player);
+    if (sides != null) return p.dice.map(() => ({ sides }));
+  }
   return p.dice;
 }
 
