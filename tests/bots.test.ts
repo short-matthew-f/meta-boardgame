@@ -52,7 +52,7 @@ describe('heuristic bots', () => {
   });
 
   it('registry knows every archetype', () => {
-    expect(Object.keys(BOTS).sort()).toEqual([...HEURISTICS, 'lookahead'].sort());
+    expect(Object.keys(BOTS).sort()).toEqual([...HEURISTICS, 'landlord', 'builder', 'lookahead'].sort());
     expect(() => botByName('nope')).toThrow(/unknown bot/);
   });
 });

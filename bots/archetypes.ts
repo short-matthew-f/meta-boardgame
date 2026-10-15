@@ -73,9 +73,51 @@ export const expanderProfile: Profile = {
   placement: 'clusterCombo',
 };
 
+/**
+ * Shared board. Tolls (tagged attack) and civics first, then VP from round 6; tolls go on the
+ * VP leader's landing spots, tiles are bought over the leader's ground readily, attacks hit the
+ * VP leader. A tolls-first-and-last version (attack 3 all game, toll bonus 1.5) won 4% of
+ * games against greedy, scorer and builder; tolls only fire on a landing and pay 1 to 3 coins.
+ */
+export const landlordProfile: Profile = {
+  ...base,
+  name: 'landlord',
+  early: { attack: 2, income: 2.5, combo: 1, score: 1.5, mover: 0.5, defense: 0, expansion: -2 },
+  late: { attack: 1.5, income: 1, score: 3, combo: 1, mover: 0.5, defense: 0, expansion: -2 },
+  switchRound: 6,
+  classWeights: { early: { toll: 0.5, civic: 1 }, late: { toll: 0, civic: 0.5 } },
+  modWeights: { 'second-die': 0.5 },
+  targetPolicy: 'vpLeader',
+  placement: 'likely',
+  leaderWeight: 3,
+  buyoutWeight: 0.1,
+  leaderCheckWeight: 0.5,
+};
+
+/**
+ * Shared board. Civics early, then saves for landmarks (it passes on tiles and mods that
+ * would leave it short of the cheapest one) and keeps a bigger mod reserve once it owns one.
+ */
+export const builderProfile: Profile = {
+  ...base,
+  name: 'builder',
+  early: { income: 3, combo: 2, score: 0.5, mover: 0.5, attack: -2, defense: 0, expansion: -2 },
+  late: { income: 1.5, combo: 1, score: 1.5, mover: 0.5, attack: -2, defense: 0, expansion: -2 },
+  switchRound: 5,
+  classWeights: { early: { civic: 2 }, late: { civic: 0.5 } },
+  targetPolicy: 'vpLeader',
+  placement: 'likely',
+  landmarkWeight: 8,
+  saveForLandmarks: { fromRound: 5, goal: 4 },
+  modReserveAfterLandmark: 14,
+  buyoutWeight: 0.5,
+};
+
 export const greedyBot = makeProfileBot(greedyProfile);
 export const greedyRandomBot = makeProfileBot(greedyRandomProfile);
 export const scorerBot = makeProfileBot(scorerProfile);
 export const aggressorBot = makeProfileBot(aggressorProfile);
 export const turtleBot = makeProfileBot(turtleProfile);
 export const expanderBot = makeProfileBot(expanderProfile);
+export const landlordBot = makeProfileBot(landlordProfile);
+export const builderBot = makeProfileBot(builderProfile);

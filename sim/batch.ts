@@ -1,4 +1,4 @@
-import type { DieSpec, GameConfig, GameRecord } from '../engine/types.ts';
+import type { BoardMode, DieSpec, GameConfig, GameRecord } from '../engine/types.ts';
 import { botByName } from '../bots/index.ts';
 import { defaultConfig, defaultSharedConfig } from '../tiles/index.ts';
 import { playGame } from './runner.ts';
@@ -47,12 +47,12 @@ export function runGames(spec: BatchSpec, onGame?: (rec: GameRecord, i: number) 
   return records;
 }
 
-export function batch(partial: Partial<BatchSpec> = {}, opts: { placementLift?: number } = {}): BatchReport {
+export function batch(partial: Partial<BatchSpec> = {}, opts: { placementLift?: number; extended?: boolean } = {}): BatchReport {
   const spec: BatchSpec = { ...DEFAULT_SPEC, ...partial };
   const config = resolveConfig(spec);
   const t0 = performance.now();
   const records = runGames(spec);
-  const metrics = computeMetrics(records, config);
+  const metrics = computeMetrics(records, config, { extended: opts.extended });
   return {
     spec,
     config: { players: config.players, endMode: config.endMode, endValue: config.endValue },
@@ -65,9 +65,12 @@ export function batch(partial: Partial<BatchSpec> = {}, opts: { placementLift?: 
 /**
  * Placement value: Greedy's win rate with landing-slot placement minus its
  * win rate with random placement, in the same lineup and seeds. Points.
+ * `boardMode` overrides the mode in `partial.config`: in 'shared' mode the
+ * placement is the class-aware traffic term (bots/placement.ts) and the
+ * control is the same Greedy with that term switched off.
  */
-export function placementValue(partial: Partial<BatchSpec> = {}): { withPlacement: number; withoutPlacement: number; lift: number } {
-  const spec: BatchSpec = { ...DEFAULT_SPEC, ...partial };
+export function placementValue(partial: Partial<BatchSpec> = {}, boardMode?: BoardMode): { withPlacement: number; withoutPlacement: number; lift: number } {
+  const spec: BatchSpec = { ...DEFAULT_SPEC, ...partial, ...(boardMode ? { config: { ...partial.config, boardMode } } : {}) };
   if (!spec.lineup.includes('greedy')) throw new Error('placementValue needs greedy in the lineup');
   const a = batch(spec).metrics.winRateByBot['greedy']!.rate;
   const b = batch({ ...spec, lineup: spec.lineup.map((n) => (n === 'greedy' ? 'greedy-random' : n)) }).metrics.winRateByBot['greedy-random']!.rate;

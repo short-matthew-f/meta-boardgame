@@ -127,8 +127,41 @@ snapshot test still passes byte for byte.
 | Customs House | Uncapped | The design gives no cap. |
 | Defaults | `defaultSharedConfig` sets `landBonus` 2; `BASE_CONFIG` is unchanged. `sideLength` must be at least 2 | The brief. |
 | Metrics | New fields are absent in loops mode; `tollsPerGame` counts every toll event including free ones; `firesByClass` counts `tileFired` events by class plus `landmark`; `flagProblems` skips the attack checks in shared mode | A new key would change the loops snapshot. There is no attack class to measure. |
-| Bots | No shared placement. Profile bots score no placement term (slot picked by tie-break); `staticValue` also reads `effects`; Lookahead prunes to one slot per tile (empty preferred) and values owned tiles at 0.45 of cost as before | The next task designs placement. |
+| Bots | Placement, archetypes and Lookahead pruning were designed afterwards: see "Shared board bots and metrics" below | The first pass only made the bots legal. |
 | UI | `EndMode` as `web/` sees it is unchanged and `web/` is untouched; `Event` and `Action` gained members, the web switches are non-exhaustive | Per the brief. |
+
+## Shared board bots and metrics
+
+Interpretations made giving the bots a shared-board placement policy
+(`bots/placement.ts`, `engine/traffic.ts`) and adding the interaction and
+progression metrics (`sim/metrics.ts`). Loops mode is unchanged: the new metric
+fields are absent unless asked for, and the default-batch snapshot still passes.
+
+| Topic | Decision | Reasoning |
+| --- | --- | --- |
+| Pass mass | `passMass` is the probability that the token's slots swept within `rolls` rolls include the slot, landing included: P(sum of the rolls >= distance). Dice only; movers, roll-agains and reroll tokens are ignored. The tables depend on (dice, board size, rolls) and the offset, so they are memoised and a call is a rotation | Exact, and a decision reads five maps for 4 players without any per-action work. |
+| Horizon | 3 rolls (`profile.lookRolls`, as Greedy's `likely`) for every term | One horizon for own and opponents' traffic. |
+| VP leader | The opponent with the most VP, ties by coins then lower seat; when the active player leads, that is the runner-up | A toll cannot be collected from yourself. |
+| Placement terms | Scores are `placementWeight` (2) times: civic opponents' + own pass mass; private and landmark own pass mass; toll opponents' landing mass + `leaderWeight` (1) times the leader's; public own landing mass minus half the opponents'. Flat adjustments: +0.5 for a private on its owner's side, -0.5 for a toll there | The brief. The flat amounts are `ownSideBonus` and `ownSidePenalty`, not scaled. Landlord uses `leaderWeight` 3. |
+| Buyout | Over another player's tile: minus the displaced tile's printed cost times `buyoutWeight` (0.3), plus (displaced owner's VP minus mine) times `leaderCheckWeight` (0.1). The VP lead is signed, so building over a player who trails costs a little extra | "Never blindly". |
+| Replacing your own tile | `replaceWeight` times its cost, as in loops mode (shared mode had no replace penalty before) | The old code read the (empty) loops board in shared mode, so replacing an own tile cost nothing. |
+| Random placement | `placement: 'random'` (the greedy-random control) drops the traffic terms but keeps cost, replace and buyout terms; its slots are not pruned | The control isolates traffic; the self-destruction penalties are not placement skill. |
+| Candidate pruning | Every (tile, slot) is scored; per shop tile, and per landmark, only the best 3 slots stay in the running (the others score -Infinity, so neither `choose` nor `decide` can pick or list them). `decide` shows distinct tiles first as before | Same pruning in both paths keeps `choose` and `decide` equal. |
+| `buyLandmark` | `landmarkWeight` (1.5) + 0.5 × VP + 0.25 × coins of its own-pass effect + `placementWeight` × own pass mass at the slot - cost × `costWeight` - replace penalty if it goes over an own tile | The brief's formula plus a small effect term so Cathedral beats the 10-coin landmarks at equal cost. Passive effects are not valued. |
+| Class bonus | Optional `classWeights` {early, late} per tile class, added to the tag weight | Tags cannot tell a civic Market from a public Well; landlord (tolls, civics) and builder (civics early) need it. |
+| Saving for landmarks | `saveForLandmarks { fromRound, goal }`: while active, a tile or mod that would leave fewer coins than the cheapest unowned landmark costs is scored -100 (so Pass wins). Builder: from round 5, until it owns 4 | How a weight-table bot saves. With `landmarkWeight` 8 it buys one the turn it can afford it. |
+| Mod reserve | `modReserveAfterLandmark` replaces `modReserve` once the bot owns a landmark; builder 6, then 14 | The brief. |
+| Landlord | Tolls and civics first (attack 2, income 2.5, toll class bonus 0.5, civic 1), VP weight 3 from round 6, buyouts nearly free (`buyoutWeight` 0.1) and the lead check 0.5 | A first version with attack 3 all game and a toll bonus of 1.5 won 4.3% of 600 games (greedy 34%, scorer 41%, builder 21%); softened because a 4% bot says little more than "tolls first loses". The softened one wins 16.8% in the same lineup (experiment cell 3) and 12.5 to 38.7% across the 4-player shared cells. |
+| Greedy, Scorer, Aggressor, Turtle | Unchanged profiles; in shared mode they place with the class-aware terms. Tolls are tagged `attack`, so Aggressor buys them and Turtle (attack -99) never does | The brief. |
+| Lookahead (shared) | Per shop tile the best empty-or-own slot by the same placement score with default weights, at most 2 buyouts (best heuristic across all tiles), at most 2 landmark builds (best slot each), every mod, every sell and Pass | The brief. 4 Lookaheads at 200 games: 17.6 s before, 7.8 s after. |
+| Interaction index | A resource event is "another player's turn" when its player is not the one whose `rolled` event came last. Purchase payments (a negative coin delta for the active player followed within two events by the matching `bought`), sales and end-of-game VP are left out; fires, tolls (both sides), corner income, buyout refunds and VP all count, by absolute value. Mean over (game, player) pairs with any movement | A purchase is spending, not a thing that happens to you. |
+| Coins gained | Positive coin deltas except buyout refunds, sales and end-of-game: tile fires, tolls received, corner income, and lap income in loops mode | The denominator of `tollShare` and `cornerShare`, and what the engine-online test sums. |
+| Engine online | A player's income in a round (all of the above, on any turn) is checked at each `roundEnded`; the first round it reaches 8 is recorded. The mean is over players that got there; `engineOnlineRate` is the share that did | 8 is the brief's threshold (`ENGINE_ONLINE_INCOME`). |
+| VP buys | A tile or landmark buy counts as a VP buy if it has the `score` tag or any branch of its effects gains VP. Thirds are by round against the game's length. Price per buy is bucketed by 3 rounds (1 to 3, 4 to 6, ..., 13 to 15); later rounds are not bucketed; mods are not buys here | "Score-tagged or public/private-VP" read as "converts to VP". Chapel, Library, Vineyard (tag combo or income) count through their effects. |
+| VP checkpoints | `vpAtRound` holds rounds 3, 5, 6, 9, 10, 12, 15: the brief's 3, 6, 9, 12, 15 and the 5 / 10 the experiment tables show. The last round of a game includes end-of-game VP | One constant; the CLI prints the brief's five. |
+| Landmark buy rate | Buys of that landmark ÷ (games × players) | A landmark is not in the shop, so there is no offer to divide by. |
+| Opt-in | `computeMetrics(records, config, { extended: true })`, `batch(spec, { extended: true })`, `--extended` for loops mode; always on in shared mode | The loops snapshot must stay byte for byte. |
+| `placementValue` | Takes the board mode as a second argument; in shared mode the control is Greedy with traffic terms off | The brief. |
 
 ## Experimental variants (all off by default)
 
@@ -158,4 +191,5 @@ and `landBonus` but its score ignores the pending end-of-game VP.
 - [ ] Placement is cosmetic under d6 × 8 slots; decide whether that is fine.
 - [ ] Shop refill rule: cycling one tile per round fixed the stall; the spec's alternative (refresh bought slots only) is now known to lock the game.
 - [ ] Still open from the spec: Start as an upgradeable slot, the 50% sell refund (no tile was ever sold by any bot in any batch), tie-break order, catch-up for late seats (no seat bias measured, so nothing to fix yet).
+- [ ] Shared board versus loops: run and tabulated in `sim/experiments/shared-results.md` (`node --import tsx sim/experiments/shared.ts --write`); the open questions in `design/shared-board-tiles.md` are answered there only as far as the numbers go, nothing is adopted.
 - [ ] Density experiment (tiles that fire on pass, end-of-game tile VP, finite VP pool, superlinear VP) is run and tabulated in `sim/experiments/density-results.md`; nothing in it is adopted, every variant is still off by default.

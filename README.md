@@ -7,12 +7,13 @@ reimplements no rule.
 TypeScript, Node 20+, Vitest, esbuild. No runtime dependencies.
 
 ```
-engine/     pure engine: types, seeded RNG, board helpers, step / legalActions, describe (readable text)
+engine/     pure engine: types, seeded RNG, board helpers, step / legalActions, describe (readable text), traffic (pass / landing masses)
               engine.ts dispatch + roll / turn flow, effects.ts effect interpreter, attack.ts, loopsShop.ts, endgame.ts,
               shared.ts + sharedBoard.ts the shared-board mode
 tiles/      starter tiles, shared-board tiles and landmarks, and die mods as JSON, plus a schema validator
-bots/       Random, Greedy, Scorer, Aggressor, Turtle, Expander (weight tables), Lookahead (one-ply EV)
-sim/        playGame / replay, batch runner with seat rotation, event-log metrics, CLI
+bots/       Random, Greedy, Scorer, Aggressor, Turtle, Expander, Landlord, Builder (weight tables), Lookahead (one-ply EV)
+              placement.ts the shared-board, class-aware placement terms
+sim/        playGame / replay, batch runner with seat rotation, event-log metrics, CLI, experiments/
 web/        browser UI (vanilla TypeScript, esbuild into dist/)
   main.ts       entry: setup screen <-> table screen
   setup.ts      table setup form
@@ -41,6 +42,9 @@ npm run sim -- batch --fireOnPass --landBonus 2 --tileEndVp 0.34 --tiles superli
 node --import tsx sim/experiments/density.ts   # the variant experiment (about 100 s)
 npm run sim -- batch --board shared --lineup random,random,random,random   # shared board mode (see below)
 npm run sim -- batch --board shared --sideLength 8 --dice 2d6 --endMode landmarkRace --endValue 3
+node --import tsx sim/experiments/shared.ts   # shared board versus loops, ten cells (see sim/experiments/shared-results.md)
+npm run sim -- batch --board shared --lineup greedy,scorer,landlord,builder   # the shared-board archetypes
+npm run sim -- batch --extended    # loops mode with interaction index and progression (always on in shared mode)
 npm run sim -- replay --seed 943   # print one game's event log
 npm run sim -- batch --json        # the BatchReport as JSON
 npm run dev:web                    # the browser UI on http://localhost:8000 (rebuilds on save)
@@ -181,10 +185,32 @@ ready config with `defaultSharedConfig(overrides)` from `tiles/index.ts`.
   `toll` and `corner`, `tileFired` carries `owner` and `slot`, and the shared
   batch report adds `tollsPerGame`, `tollCoinsPerGame`, `cornerIncomePerGame`
   and `firesByClass` (absent in loops mode, so loops reports are unchanged).
+- **Bots.** Profile bots place by tile class (`bots/placement.ts`, traffic from
+  `engine/traffic.ts`): civics go where any token passes, privates and landmarks on
+  the owner's own path (privates get a bonus on their own side), tolls where
+  opponents land (weighted toward the VP leader; a penalty on the owner's own
+  side), publics where the owner lands first. Building over another player's tile
+  costs `buyoutWeight` per coin of the displaced tile and earns `leaderCheckWeight`
+  per VP that player leads by; `buyLandmark` is scored from `landmarkWeight`. Each
+  shop tile keeps its best 3 slots as candidates. Two archetypes are built for the
+  mode: **landlord** (tolls and civics, tolls on the leader's landing spots, buys
+  out the leader readily, targets the VP leader) and **builder** (civics early,
+  then saves for landmarks and keeps a bigger mod reserve once it owns one).
+  Greedy, Scorer, Aggressor and Turtle play through their tag weights (tolls are
+  tagged `attack`). Lookahead searches the best traffic slot per tile, at most 2
+  buyouts and 2 landmark builds.
+- **Metrics.** Shared batches also report `interactionIndex`, `tollShare`,
+  `cornerShare`, `progression` (VP by round, price per buy, VP buys by third,
+  engine-online round), `landmarksPerGame`, `landmarkBuyRate` and
+  `buyoutsPerGame`. Loops reports gain none of them unless asked
+  (`--extended` / `computeMetrics(..., { extended: true })`).
+- **Experiment.** `sim/experiments/shared.ts` runs shared versus loops in ten
+  cells (die size, players, end modes, corner income, own-side protection) with
+  the standard, shared and lookahead lineups; numbers in
+  `sim/experiments/shared-results.md`.
 - **Not done yet.** The browser UI is loops-only (`EndMode` as the UI sees it
-  does not include `landmarkRace`). The bots run in shared mode but have no
-  placement logic: profile bots score no slot, Lookahead tries one slot per
-  tile. Interpretations beyond the design doc are in `DECISIONS.md`.
+  does not include `landmarkRace`). Interpretations beyond the design doc are in
+  `DECISIONS.md`.
 
 ## Rules as implemented
 

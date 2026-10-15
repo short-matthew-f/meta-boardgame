@@ -1,11 +1,13 @@
 // A bot archetype is a weight table. Every legal action is scored, the max
 // wins, ties break with the bot RNG. Adding a style is adding a Profile.
-import type { Action, Effect, GameState, PlayerState, Tag, TileDef } from '../engine/types.ts';
-import type { Rng } from '../engine/rng.ts';
+import type { Action, Effect, GameState, PlayerState, Tag, TileClass, TileDef } from '../engine/types.ts';
 import { countAdjacentWithTag, effectiveDice, landingMass, tileDef } from '../engine/board.ts';
-import { modName, tileName } from '../engine/describe.ts';
+import { itemName, modName, tileName } from '../engine/describe.ts';
+import { discountedCost, itemCost, landmarkDef } from '../engine/sharedBoard.ts';
+import { trafficMaps, type TrafficMaps } from '../engine/traffic.ts';
 import type { Bot, Decision } from './types.ts';
 import { buildDecision, fixed, num, onlyOption, pickBest, sgn, shortLabel } from './explain.ts';
+import { classOfTile, DEFAULT_PLACE_WEIGHTS, sharedPlacement, type PlaceWeights, type SharedPlace } from './placement.ts';
 
 export type TargetPolicy = 'coinLeader' | 'vpLeader' | 'random';
 export type Placement = 'likely' | 'adjacentScore' | 'clusterCombo' | 'random';
@@ -34,10 +36,36 @@ export type Profile = {
   passWeight: number;
   /** Reroll when the kept total is below this (0 never rerolls). */
   rerollBelow: number;
+
+  // Shared-board mode (every field optional; the defaults are in SHARED_DEFAULTS)
+  /** Penalty per coin of the displaced tile's cost when building over another player's tile. */
+  buyoutWeight?: number;
+  /** Bonus per VP the displaced owner is ahead of this player (negative when behind). */
+  leaderCheckWeight?: number;
+  /** Base score of buying a landmark. */
+  landmarkWeight?: number;
+  /** Tolls: extra weight on the VP leader's landing mass (1 = the leader counts double). */
+  leaderWeight?: number;
+  /** Privates: flat bonus on the owner's own side. */
+  ownSideBonus?: number;
+  /** Tolls: flat penalty on the owner's own side. */
+  ownSidePenalty?: number;
+  /** Added to the tag score by the class of the tile, before and from `switchRound`. */
+  classWeights?: { early: Partial<Record<TileClass, number>>; late: Partial<Record<TileClass, number>> };
+  /** From `fromRound`, while owning fewer than `goal` landmarks, refuse tiles and mods that would leave fewer coins than the cheapest landmark costs. */
+  saveForLandmarks?: { fromRound: number; goal: number };
+  /** Replaces `modReserve` once the player owns a landmark. */
+  modReserveAfterLandmark?: number;
 };
 
+export const SHARED_DEFAULTS = { buyoutWeight: 0.3, leaderCheckWeight: 0.1, landmarkWeight: 1.5 };
+/** Score subtracted from a purchase that would break a landmark savings plan (large enough that Pass wins). */
+const SAVE_PENALTY = 100;
+/** How many slots per shop tile (or landmark) stay in the running; the rest are scored but not offered. */
+export const SLOT_CANDIDATES = 3;
+
 /** Static resource value of a tile per trigger, treating computed amounts as 1 per unit. */
-export function staticValue(def: TileDef): { coins: number; vp: number } {
+export function staticValue(def: Pick<TileDef, 'onLand' | 'onPass' | 'onLap' | 'effects'>): { coins: number; vp: number } {
   const out = { coins: 0, vp: 0 };
   const walk = (effects: Effect[] | undefined) => {
     if (!effects) return;
@@ -70,7 +98,6 @@ function leaderBy(state: GameState, me: number, key: 'coins' | 'vp'): number {
 
 /** Raw landing/adjacency measure behind the placement term (before `placementWeight`). */
 function placementRaw(state: GameState, me: number, slot: number, def: TileDef, placement: Placement, mass: () => Map<number, number>): number {
-  if (state.shared) return 0; // shared-board placement is not designed yet: no placement term
   switch (placement) {
     case 'likely': {
       if (!def.onLand) return 0;
@@ -104,10 +131,23 @@ type Parts = {
   listed: boolean; // mod weight came from the profile
   base: number; // pass / sell weight
   blocked: boolean; // mod purchase refused by the coin reserve
+  // shared board
+  cls: TileClass | null; // class of the tile being bought
+  classBonus: number; // profile.classWeights for that class
+  sp: SharedPlace | null; // class-aware placement terms
+  displaced: number; // player whose tile this buyout replaces, else -1
+  buyout: number; // penalty subtracted for the displaced tile's cost
+  leadVp: number; // displaced owner's VP minus mine
+  leaderCheck: number; // bonus added for that lead
+  fires: number; // landmark: value of its own-pass effect
+  saving: boolean; // refused: it would break the landmark savings plan
 };
 
 function newParts(): Parts {
-  return { tagName: null, tag: 0, vpc: 0, placeRaw: 0, place: 0, cost: 0, replace: 0, replaced: null, insert: 0, weight: 0, listed: false, base: 0, blocked: false };
+  return {
+    tagName: null, tag: 0, vpc: 0, placeRaw: 0, place: 0, cost: 0, replace: 0, replaced: null, insert: 0, weight: 0, listed: false, base: 0, blocked: false,
+    cls: null, classBonus: 0, sp: null, displaced: -1, buyout: 0, leadVp: 0, leaderCheck: 0, fires: 0, saving: false,
+  };
 }
 
 type ScoreCtx = {
@@ -117,16 +157,40 @@ type ScoreCtx = {
   p: PlayerState;
   weights: Partial<Record<Tag, number>>;
   mass: () => Map<number, number>;
+  /** Shared mode: traffic maps, computed once per decision on first use. */
+  traffic: () => TrafficMaps;
+  place: PlaceWeights;
+  /** Shared mode: coins the savings plan wants to keep (cheapest unowned landmark), or 0 when it is not saving. */
+  saveTarget: () => number;
 };
 
 function makeCtx(profile: Profile, state: GameState): ScoreCtx {
   const me = state.activePlayer;
   const p = state.players[me]!;
   let massCache: Map<number, number> | null = null;
+  let trafficCache: TrafficMaps | null = null;
+  let target: number | null = null;
   return {
     profile, state, me, p,
     weights: state.round < profile.switchRound ? profile.early : profile.late,
     mass: () => (massCache ??= landingMass(p.position, effectiveDice(state, me), p.board.length, profile.lookRolls ?? 3)),
+    traffic: () => (trafficCache ??= trafficMaps(state, profile.lookRolls ?? 3)),
+    place: {
+      placementWeight: profile.placementWeight,
+      leaderWeight: profile.leaderWeight ?? DEFAULT_PLACE_WEIGHTS.leaderWeight,
+      ownSideBonus: profile.ownSideBonus ?? DEFAULT_PLACE_WEIGHTS.ownSideBonus,
+      ownSidePenalty: profile.ownSidePenalty ?? DEFAULT_PLACE_WEIGHTS.ownSidePenalty,
+    },
+    saveTarget: () => {
+      if (target != null) return target;
+      target = 0;
+      const plan = profile.saveForLandmarks;
+      if (state.shared && plan && state.round >= plan.fromRound && p.landmarks.length < plan.goal) {
+        const open = state.config.landmarkSet.filter((l) => !p.landmarks.includes(l.id));
+        if (open.length > 0) target = Math.min(...open.map((l) => l.cost));
+      }
+      return target;
+    },
   };
 }
 
@@ -140,6 +204,72 @@ function tagWeight(c: ScoreCtx, def: TileDef, parts: Parts): number {
   return w === -Infinity ? 0 : w;
 }
 
+/** Shared mode: keep the savings plan from spending below the landmark target. */
+function savingPenalty(c: ScoreCtx, cost: number, parts: Parts): number {
+  const target = c.saveTarget();
+  if (target > 0 && c.p.coins - cost < target) {
+    parts.saving = true;
+    return SAVE_PENALTY;
+  }
+  return 0;
+}
+
+function modReserve(c: ScoreCtx): number {
+  const after = c.profile.modReserveAfterLandmark;
+  return after != null && c.p.landmarks.length > 0 ? after : c.profile.modReserve;
+}
+
+/** Shared mode, buyTile: tag weight, class bonus, class-aware placement, cost, replace or buyout. */
+function scoreSharedBuy(c: ScoreCtx, a: Extract<Action, { type: 'buyTile' }>, parts: Parts): number {
+  const { profile, state, me } = c;
+  const def = tileDef(state.config, state.shop[a.shopIndex]!);
+  const cls = classOfTile(def);
+  let s = parts.tag = tagWeight(c, def, parts);
+  parts.cls = cls;
+  const cw = state.round < profile.switchRound ? profile.classWeights?.early : profile.classWeights?.late;
+  s += parts.classBonus = cw?.[cls] ?? 0;
+  parts.vpc = 0;
+  if (profile.vpPerCoin && def.tags.includes('score')) s += parts.vpc = (staticValue(def).vp / def.cost) * 4;
+  if (profile.placement !== 'random') {
+    parts.sp = sharedPlacement(c.traffic(), state, cls, a.slot, c.place);
+    s += parts.place = parts.sp.value;
+  }
+  const price = discountedCost(state, me, def.cost);
+  s -= parts.cost = price * profile.costWeight;
+  const there = state.shared!.slots[a.slot]!;
+  parts.replaced = there.tile ?? null;
+  if (there.tile != null) {
+    const old = itemCost(state.config, there.tile);
+    if (there.owner === me) s -= parts.replace = old * profile.replaceWeight;
+    else if (there.owner != null) {
+      parts.displaced = there.owner;
+      s -= parts.buyout = old * (profile.buyoutWeight ?? SHARED_DEFAULTS.buyoutWeight);
+      parts.leadVp = state.players[there.owner]!.vp - c.p.vp;
+      s += parts.leaderCheck = parts.leadVp * (profile.leaderCheckWeight ?? SHARED_DEFAULTS.leaderCheckWeight);
+    }
+  }
+  return s - savingPenalty(c, price, parts);
+}
+
+/** Shared mode, buyLandmark: base weight, what it pays when the owner passes, own traffic, cost. */
+function scoreLandmark(c: ScoreCtx, a: Extract<Action, { type: 'buyLandmark' }>, parts: Parts): number {
+  const { profile, state } = c;
+  const lm = landmarkDef(state.config, a.landmarkId)!;
+  parts.cls = null;
+  let s = parts.weight = profile.landmarkWeight ?? SHARED_DEFAULTS.landmarkWeight;
+  const sv = staticValue(lm);
+  s += parts.fires = 0.5 * sv.vp + 0.25 * sv.coins;
+  if (profile.placement !== 'random') {
+    parts.sp = sharedPlacement(c.traffic(), state, 'landmark', a.slot, c.place);
+    s += parts.place = parts.sp.value;
+  }
+  s -= parts.cost = lm.cost * profile.costWeight;
+  const there = state.shared!.slots[a.slot]!;
+  parts.replaced = there.tile ?? null;
+  if (there.tile != null) s -= parts.replace = itemCost(state.config, there.tile) * profile.replaceWeight;
+  return s;
+}
+
 function scoreAction(c: ScoreCtx, a: Action, parts: Parts): number {
   const { profile, state, me, p } = c;
   switch (a.type) {
@@ -147,6 +277,7 @@ function scoreAction(c: ScoreCtx, a: Action, parts: Parts): number {
       parts.base = profile.passWeight;
       return profile.passWeight;
     case 'buyTile': {
+      if (state.shared) return scoreSharedBuy(c, a, parts);
       const def = tileDef(state.config, state.shop[a.shopIndex]!);
       let s = parts.tag = tagWeight(c, def, parts);
       parts.vpc = 0;
@@ -160,6 +291,8 @@ function scoreAction(c: ScoreCtx, a: Action, parts: Parts): number {
       if (old != null) s -= parts.replace = tileDef(state.config, old).cost * profile.replaceWeight;
       return s;
     }
+    case 'buyLandmark':
+      return scoreLandmark(c, a, parts);
     case 'buyExpansion': {
       const def = tileDef(state.config, state.shop[a.shopIndex]!);
       let s = (parts.tag = tagWeight(c, def, parts)) - (parts.cost = def.cost * profile.costWeight);
@@ -169,10 +302,10 @@ function scoreAction(c: ScoreCtx, a: Action, parts: Parts): number {
     }
     case 'buyMod': {
       const cost = state.config.modSet.find((m) => m.id === a.modId)?.cost ?? 0;
-      if (p.coins - cost < profile.modReserve) { parts.blocked = true; return -Infinity; }
+      if (p.coins - cost < modReserve(c)) { parts.blocked = true; return -Infinity; }
       parts.listed = a.modId in profile.modWeights;
       parts.weight = profile.modWeights[a.modId] ?? -1;
-      return parts.weight - (parts.cost = cost * profile.costWeight);
+      return parts.weight - (parts.cost = cost * profile.costWeight) - savingPenalty(c, cost, parts);
     }
     case 'sellTile':
       parts.base = profile.sellWeight;
@@ -180,6 +313,36 @@ function scoreAction(c: ScoreCtx, a: Action, parts: Parts): number {
     default:
       return 0;
   }
+}
+
+/**
+ * Shared mode: every shop tile (and landmark) is scored on every slot, but only
+ * its best SLOT_CANDIDATES slots stay in the running (the rest are set to
+ * -Infinity, so neither `choose` nor `decide` can pick or list them). Random
+ * placement scores every empty slot the same, so it is left whole and the Rng
+ * breaks the tie as before. Returns how many actions were dropped.
+ */
+function pruneSlots(profile: Profile, state: GameState, legal: Action[], scores: number[]): number {
+  if (!state.shared || profile.placement === 'random') return 0;
+  const best = new Map<string, number[]>(); // key -> indices of the kept slots, best first
+  let dropped = 0;
+  const offer = (key: string, i: number) => {
+    const keep = best.get(key) ?? [];
+    best.set(key, keep);
+    let k = keep.length;
+    while (k > 0 && scores[keep[k - 1]!]! < scores[i]!) k--;
+    keep.splice(k, 0, i);
+    if (keep.length > SLOT_CANDIDATES) {
+      scores[keep.pop()!] = -Infinity;
+      dropped++;
+    }
+  };
+  for (let i = 0; i < legal.length; i++) {
+    const a = legal[i]!;
+    if (a.type === 'buyTile') offer(`t${a.shopIndex}`, i);
+    else if (a.type === 'buyLandmark') offer(`l${a.landmarkId}`, i);
+  }
+  return dropped;
 }
 
 // Prompts shared by choose and decide.
@@ -195,6 +358,47 @@ function rerolls(profile: Profile, state: GameState): boolean {
 function weightList(w: Partial<Record<Tag, number>>): string {
   const parts = Object.entries(w).map(([k, v]) => `${k} ${num(v as number)}`);
   return parts.length > 0 ? parts.join(', ') : 'all zero';
+}
+
+/** `Bridge → slot 7 (over Player 2's Shrine)` / `(replacing Market)`: the label plus what the slot already holds. */
+function slotNote(state: GameState, me: number, slot: number): string {
+  const there = state.shared!.slots[slot]!;
+  if (there.tile == null) return '';
+  const name = itemName(state.config, there.tile);
+  return there.owner === me ? ` (replacing ${name})` : ` (over Player ${(there.owner ?? 0) + 1}'s ${name})`;
+}
+
+function placeBits(sp: SharedPlace, pr: Parts): string[] {
+  const t = fixed(sp.traffic, 2);
+  switch (sp.cls) {
+    case 'civic': return [`traffic ${t} ${sgn(pr.place)}`];
+    case 'private': return [`own path ${t} ${sgn(pr.place - sp.side)}`, ...(sp.side !== 0 ? [`own side ${sgn(sp.side)}`] : [])];
+    case 'landmark': return [`own path ${t} ${sgn(pr.place)}`];
+    case 'toll': return [`opponents land ${fixed(sp.oppLand, 2)}, leader lands ${fixed(sp.leaderLand, 2)} ${sgn(pr.place - sp.side)}`, ...(sp.side !== 0 ? [`own side ${sgn(sp.side)}`] : [])];
+    case 'public': return [`you land ${fixed(sp.ownLand, 2)}, others ${fixed(sp.oppLand, 2)} ${sgn(pr.place)}`];
+  }
+}
+
+function sharedBuyWhy(state: GameState, a: Extract<Action, { type: 'buyTile' }>, def: TileDef, pr: Parts, label: string): string {
+  const bits = [`${pr.cls ?? classOfTile(def)} ${sgn(pr.tag)}`];
+  if (pr.classBonus !== 0) bits.push(`class bonus ${sgn(pr.classBonus)}`);
+  if (pr.vpc !== 0) bits.push(`VP per coin ${sgn(pr.vpc)}`);
+  if (pr.sp) bits.push(...placeBits(pr.sp, pr));
+  bits.push(`cost ${sgn(-pr.cost, 2)}`);
+  if (pr.displaced >= 0) {
+    bits.push(`buyout ${sgn(-pr.buyout)}`);
+    bits.push(`${pr.leadVp >= 0 ? 'leads you by' : 'trails you by'} ${Math.abs(pr.leadVp)} VP ${sgn(pr.leaderCheck)}`);
+  } else if (pr.replaced != null) bits.push(`replace ${sgn(-pr.replace, 2)}`);
+  if (pr.saving) bits.push('saving for a landmark');
+  return `${label.replace(/ → slot (\d+)$/, ` → slot $1${slotNote(state, state.activePlayer, a.slot)}`)}: ${bits.join(', ')}`;
+}
+
+function landmarkWhy(state: GameState, a: Extract<Action, { type: 'buyLandmark' }>, pr: Parts, label: string): string {
+  const bits = [`landmark ${sgn(pr.weight)}`, `pays when you pass ${sgn(pr.fires)}`];
+  if (pr.sp) bits.push(...placeBits(pr.sp, pr));
+  bits.push(`cost ${sgn(-pr.cost, 2)}`);
+  if (pr.replaced != null) bits.push(`replace ${sgn(-pr.replace, 2)}`);
+  return `${label.replace(/ → slot (\d+)$/, ` → slot $1${slotNote(state, state.activePlayer, a.slot)}`)}: ${bits.join(', ')}`;
 }
 
 export function makeProfileBot(profile: Profile): Bot {
@@ -220,6 +424,7 @@ export function makeProfileBot(profile: Profile): Bot {
       const scratch = newParts();
       const scores = new Array<number>(legal.length);
       for (let i = 0; i < legal.length; i++) scores[i] = scoreAction(c, legal[i]!, scratch);
+      pruneSlots(profile, state, legal, scores);
       return legal[pickBest(scores, rng)]!;
     },
 
@@ -273,6 +478,7 @@ export function makeProfileBot(profile: Profile): Bot {
         parts.push(pr);
         return scoreAction(c, a, pr);
       });
+      const prunedSlots = pruneSlots(profile, state, legal, scores);
       const chosen = pickBest(scores, rng);
       const cfg = state.config;
 
@@ -285,6 +491,7 @@ export function makeProfileBot(profile: Profile): Bot {
             return i === chosen ? `Pass: nothing scores above ${num(pr.base)}` : `Pass: baseline ${num(pr.base)}`;
           case 'buyTile': {
             const def = tileDef(cfg, state.shop[a.shopIndex]!);
+            if (state.shared) return sharedBuyWhy(state, a, def, pr, label);
             const bits = [`${pr.tagName ?? def.tags[0]} ${sgn(pr.tag)}`];
             if (pr.vpc !== 0) bits.push(`VP per coin ${sgn(pr.vpc)}`);
             if (pr.placeRaw > 0) {
@@ -298,6 +505,8 @@ export function makeProfileBot(profile: Profile): Bot {
             if (pr.replaced != null) bits.push(`replacing ${tileName(cfg, pr.replaced)} ${sgn(-pr.replace, 2)}`);
             return `${label}: ${bits.join(', ')}`;
           }
+          case 'buyLandmark':
+            return landmarkWhy(state, a, pr, label);
           case 'buyExpansion': {
             const def = tileDef(cfg, state.shop[a.shopIndex]!);
             const bits = [`${pr.tagName ?? def.tags[0]} ${sgn(pr.tag)}`];
@@ -306,7 +515,7 @@ export function makeProfileBot(profile: Profile): Bot {
             return `${label}: ${bits.join(', ')}`;
           }
           case 'buyMod':
-            return `${modName(cfg, a.modId)}: mod weight ${fixed(pr.weight)}${pr.listed ? '' : ' (not in profile)'}, cost ${sgn(-pr.cost, 2)}`;
+            return `${modName(cfg, a.modId)}: mod weight ${fixed(pr.weight)}${pr.listed ? '' : ' (not in profile)'}, cost ${sgn(-pr.cost, 2)}${pr.saving ? ', saving for a landmark' : ''}`;
           case 'sellTile':
             return `${label}: ${num(pr.base)}`;
           default:
@@ -317,13 +526,16 @@ export function makeProfileBot(profile: Profile): Bot {
       const late = state.round >= profile.switchRound;
       let note = `${profile.name}: round ${state.round} ${late ? '≥' : '<'} switch round ${profile.switchRound}, using ${late ? 'late' : 'early'} weights (${weightList(c.weights)})`;
       const blocked = parts.filter((x) => x.blocked).length;
-      if (blocked > 0) note += `; ${blocked} mod ${blocked === 1 ? 'purchase' : 'purchases'} skipped to keep a ${profile.modReserve}-coin reserve`;
+      if (blocked > 0) note += `; ${blocked} mod ${blocked === 1 ? 'purchase' : 'purchases'} skipped to keep a ${modReserve(c)}-coin reserve`;
+      if (prunedSlots > 0) note += `; each tile keeps its best ${SLOT_CANDIDATES} slots (${prunedSlots} slot options not offered)`;
+      if (c.saveTarget() > 0) note += `; saving for a landmark (${c.saveTarget()} coins)`;
       const group = (i: number): string => {
         const a = legal[i]!;
         switch (a.type) {
           case 'buyTile': case 'buyExpansion': return `tile:${state.shop[a.shopIndex]}`;
+          case 'buyLandmark': return `landmark:${a.landmarkId}`;
           case 'buyMod': return `mod:${a.modId}`;
-          case 'sellTile': return `sell:${c.p.board[a.slot]}`;
+          case 'sellTile': return `sell:${state.shared ? state.shared.slots[a.slot]!.tile : c.p.board[a.slot]}`;
           default: return a.type;
         }
       };

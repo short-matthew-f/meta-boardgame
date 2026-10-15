@@ -1,6 +1,6 @@
 // Every metric is a reducer over GameRecord[] (bots per seat, winner, events).
 // Nothing here inspects engine state.
-import type { Event, GameConfig, GameRecord } from '../engine/types.ts';
+import type { Effect, Event, GameConfig, GameRecord } from '../engine/types.ts';
 
 export type BotStat = { games: number; wins: number; rate: number };
 export type TileStat = {
@@ -30,7 +30,39 @@ export type Metrics = {
   cornerIncomePerGame?: number;
   /** Shared mode: tileFired events per game by tile class (civic, private, toll, public) and 'landmark'. */
   firesByClass?: Record<string, number>;
+  /** Shared mode, or `computeMetrics(..., { extended: true })` (absent otherwise so loops reports are unchanged). */
+  /** Mean over (game, player) of the share of that player's coin + VP movement (absolute deltas, not counting their own purchases or sales) that happened during another player's turn. */
+  interactionIndex?: number;
+  progression?: Progression;
+  /** Shared mode only. Toll coins paid ÷ coins gained from tiles and corners, mean per game. */
+  tollShare?: number;
+  /** Shared mode only. Corner income ÷ coins gained from tiles and corners, mean per game. */
+  cornerShare?: number;
+  /** Shared mode only. Landmarks bought per game (all players). */
+  landmarksPerGame?: number;
+  /** Shared mode only. Per landmark id: buys ÷ (games × players), the share of player-games that ended owning it. */
+  landmarkBuyRate?: Record<string, number>;
+  /** Shared mode only. Buyouts (a tile built over another player's) per game. */
+  buyoutsPerGame?: number;
   lopsided: { seed: number; winner: number; winnerBot: string; margin: number }[];
+};
+
+/** Rounds at which VP is sampled: 3, 6, 9, 12, 15 for the progression metric, plus 5 and 10 for the experiment tables. */
+export const VP_CHECKPOINTS = [3, 5, 6, 9, 10, 12, 15];
+/** A player's per-round income (coins from tiles and corners) that counts as the engine being online. */
+export const ENGINE_ONLINE_INCOME = 8;
+
+export type Progression = {
+  /** Mean VP per player at the end of each checkpoint round (games that reached it; includes end-of-game VP when that round is the last). */
+  vpAtRound: Record<number, number>;
+  /** Mean price paid per tile or landmark bought, by round bucket; the key is the last round of the bucket (3 = rounds 1 to 3). Rounds past 15 are not bucketed. */
+  buyCostByRound: Record<number, number>;
+  /** Share of tile and landmark buys that are VP buys (score tag, or any effect that gains VP) in the first, middle and last third of the game. */
+  vpBuyShareByThird: [number, number, number];
+  /** Mean first round in which a player's income (coins from tiles and corners) reached ENGINE_ONLINE_INCOME, over the players that got there. */
+  engineOnlineRound: number;
+  /** Share of (game, player) pairs that got there at all. */
+  engineOnlineRate: number;
 };
 
 export function percentile(sorted: number[], q: number): number {
@@ -65,7 +97,89 @@ export function decidedRound(events: Event[], winner: number): number {
   return decided;
 }
 
-export function computeMetrics(records: GameRecord[], config: GameConfig): Metrics {
+
+function gainsVp(effects: Effect[] | undefined): boolean {
+  if (!effects) return false;
+  return effects.some((e) => (e.op === 'gain' && e.res === 'vp') || (e.op === 'steal' && e.res === 'vp') || (e.op === 'if' && (gainsVp(e.then) || gainsVp(e.else))));
+}
+
+/** Per game: reducers over the event log behind interactionIndex, tollShare, cornerShare, progression and the landmark / buyout counts. */
+function gameExtras(rec: GameRecord, config: GameConfig, vpItem: Map<string, boolean>, landmarkIds: Set<string>) {
+  const n = config.players;
+  const ev = rec.events;
+  const own = new Array<number>(n).fill(0);
+  const other = new Array<number>(n).fill(0);
+  let gross = 0, corner = 0, tollCoins = 0, buyouts = 0, landmarks = 0;
+  const landmarkBuys: Record<string, number> = {};
+  const roundIncome = new Array<number>(n).fill(0);
+  const online = new Array<number | null>(n).fill(null);
+  const vpAt: Record<number, number[]> = {};
+  const buyCost: Record<number, { sum: number; n: number }> = {};
+  const buys: { round: number; vp: boolean }[] = [];
+  let active = -1;
+  let round = 1;
+  for (let i = 0; i < ev.length; i++) {
+    const e = ev[i]!;
+    switch (e.t) {
+      case 'rolled':
+        active = e.player;
+        round = e.round;
+        break;
+      case 'resource': {
+        if (e.source === 'sale' || e.source === 'endgame') break;
+        // The payment for a purchase is the player's own spending, not income or interaction.
+        if (e.delta < 0 && e.res === 'coins' && e.player === active) {
+          let purchase = false;
+          for (let j = i + 1; j <= i + 2 && j < ev.length; j++) {
+            const b = ev[j]!;
+            if (b.t === 'bought' && b.player === e.player && b.item === e.source && b.cost === -e.delta) { purchase = true; break; }
+          }
+          if (purchase) break;
+        }
+        (e.player === active ? own : other)[e.player]! += Math.abs(e.delta);
+        if (e.res === 'coins' && e.delta > 0 && e.source !== 'buyout') {
+          gross += e.delta;
+          roundIncome[e.player]! += e.delta;
+          if (e.source === 'corner') corner += e.delta;
+        }
+        break;
+      }
+      case 'toll':
+        tollCoins += e.amount;
+        break;
+      case 'bought': {
+        const isTile = vpItem.has(e.item);
+        if (e.displaced != null) buyouts++;
+        if (landmarkIds.has(e.item)) { landmarks++; landmarkBuys[e.item] = (landmarkBuys[e.item] ?? 0) + 1; }
+        if (!isTile) break;
+        buys.push({ round, vp: vpItem.get(e.item)! });
+        if (round <= 15) {
+          const bucket = Math.ceil(round / 3) * 3;
+          const c = (buyCost[bucket] ??= { sum: 0, n: 0 });
+          c.sum += e.cost;
+          c.n++;
+        }
+        break;
+      }
+      case 'roundEnded':
+        for (let q = 0; q < n; q++) {
+          if (online[q] == null && roundIncome[q]! >= ENGINE_ONLINE_INCOME) online[q] = e.round;
+          roundIncome[q] = 0;
+        }
+        if (VP_CHECKPOINTS.includes(e.round)) vpAt[e.round] = e.standings.map((s) => s.vp);
+        break;
+      default:
+    }
+  }
+  return { own, other, gross, corner, tollCoins, buyouts, landmarks, landmarkBuys, online, vpAt, buyCost, buys, rounds: rec.rounds };
+}
+
+export type MetricsOptions = {
+  /** Add the shared-board-agnostic extras (interactionIndex, progression) in loops mode too. Always on in shared mode. */
+  extended?: boolean;
+};
+
+export function computeMetrics(records: GameRecord[], config: GameConfig, opts: MetricsOptions = {}): Metrics {
   const games = records.length;
   const players = config.players;
   const byBot: Record<string, BotStat> = {};
@@ -94,7 +208,49 @@ export function computeMetrics(records: GameRecord[], config: GameConfig): Metri
     ...config.landmarkSet.map((l) => [l.id, 'landmark'] as [string, string]),
   ]);
 
+  const ext = shared || !!opts.extended;
+  // VP-oriented items: a score tag, or any effect that gains VP (tiles in either mode, and landmarks)
+  const vpItem = new Map<string, boolean>();
+  for (const t of config.tileSet) vpItem.set(t.id, t.tags.includes('score') || gainsVp(t.effects) || gainsVp(t.onLand) || gainsVp(t.onPass) || gainsVp(t.onLap));
+  for (const l of config.landmarkSet) vpItem.set(l.id, gainsVp(l.effects));
+  const landmarkIds = new Set(config.landmarkSet.map((l) => l.id));
+  const interaction: number[] = [], tollShares: number[] = [], cornerShares: number[] = [];
+  const vpSum: Record<number, { sum: number; n: number }> = {};
+  const costSum: Record<number, { sum: number; n: number }> = {};
+  const third = [{ vp: 0, n: 0 }, { vp: 0, n: 0 }, { vp: 0, n: 0 }];
+  const onlineRounds: number[] = [];
+  let onlinePairs = 0, landmarkTotal = 0, buyoutTotal = 0;
+  const landmarkBuys: Record<string, number> = {};
+
   for (const rec of records) {
+    if (ext) {
+      const x = gameExtras(rec, config, vpItem, landmarkIds);
+      for (let q = 0; q < players; q++) {
+        const total = x.own[q]! + x.other[q]!;
+        if (total > 0) interaction.push(x.other[q]! / total);
+        onlinePairs++;
+        if (x.online[q] != null) onlineRounds.push(x.online[q]!);
+      }
+      if (x.gross > 0) { tollShares.push(x.tollCoins / x.gross); cornerShares.push(x.corner / x.gross); }
+      for (const [r, vps] of Object.entries(x.vpAt)) {
+        const a = (vpSum[Number(r)] ??= { sum: 0, n: 0 });
+        a.sum += vps.reduce((m, v) => m + v, 0);
+        a.n += vps.length;
+      }
+      for (const [b, c] of Object.entries(x.buyCost)) {
+        const a = (costSum[Number(b)] ??= { sum: 0, n: 0 });
+        a.sum += c.sum;
+        a.n += c.n;
+      }
+      for (const b of x.buys) {
+        const k = Math.min(2, Math.floor(((b.round - 1) * 3) / Math.max(1, x.rounds)));
+        third[k]!.n++;
+        if (b.vp) third[k]!.vp++;
+      }
+      landmarkTotal += x.landmarks;
+      buyoutTotal += x.buyouts;
+      for (const [id, k] of Object.entries(x.landmarkBuys)) landmarkBuys[id] = (landmarkBuys[id] ?? 0) + k;
+    }
     for (let seat = 0; seat < players; seat++) {
       const name = rec.bots[seat]!;
       byBot[name] ??= { games: 0, wins: 0, rate: 0 };
@@ -214,6 +370,23 @@ export function computeMetrics(records: GameRecord[], config: GameConfig): Metri
       tollCoinsPerGame: games ? tollCoins / games : 0,
       cornerIncomePerGame: games ? cornerIncome / games : 0,
       firesByClass: Object.fromEntries(Object.entries(fires).map(([k, v]) => [k, games ? v / games : 0])),
+    } : {}),
+    ...(ext ? {
+      interactionIndex: mean(interaction),
+      progression: {
+        vpAtRound: Object.fromEntries(VP_CHECKPOINTS.filter((r) => vpSum[r]).map((r) => [r, vpSum[r]!.sum / vpSum[r]!.n])),
+        buyCostByRound: Object.fromEntries([3, 6, 9, 12, 15].filter((r) => costSum[r]).map((r) => [r, costSum[r]!.sum / costSum[r]!.n])),
+        vpBuyShareByThird: third.map((t) => (t.n ? t.vp / t.n : NaN)) as [number, number, number],
+        engineOnlineRound: mean(onlineRounds),
+        engineOnlineRate: onlinePairs ? onlineRounds.length / onlinePairs : 0,
+      },
+    } : {}),
+    ...(shared ? {
+      tollShare: mean(tollShares),
+      cornerShare: mean(cornerShares),
+      landmarksPerGame: games ? landmarkTotal / games : 0,
+      landmarkBuyRate: Object.fromEntries(config.landmarkSet.map((l) => [l.id, games ? (landmarkBuys[l.id] ?? 0) / (games * players) : 0])),
+      buyoutsPerGame: games ? buyoutTotal / games : 0,
     } : {}),
     lopsided: lopsided.slice(0, 10),
   };

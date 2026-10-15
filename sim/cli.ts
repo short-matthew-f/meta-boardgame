@@ -2,6 +2,7 @@
 //   npm run sim -- batch   [--games N] [--seed S] [--lineup a,b,c,d] [--endMode m] [--endValue v] [--no-rotate] [--json]
 //                          [--fireOnPass] [--landBonus N] [--tileEndVp X] [--tiles superlinear]   (experimental variants, off by default)
 //                          endMode is turnCap, vpRace, lapRace, vpPool (endValue = total VP pool) or landmarkRace (endValue = landmarks needed)
+//                          [--extended]   (loops mode: also report interaction index and progression; always on in shared mode)
 //                          [--board loops|shared] [--sideLength N] [--dice 2d6]   (shared board: one loop for everyone, owned tiles; --dice applies to both modes)
 //   npm run sim -- balance [--games N] [--seed S]
 //   npm run sim -- replay  --seed S [--lineup a,b,c,d] [--endMode m] [--endValue v]
@@ -29,6 +30,7 @@ const { values, positionals } = parseArgs({
     tiles: { type: 'string' },
     'no-rotate': { type: 'boolean' },
     json: { type: 'boolean' },
+    extended: { type: 'boolean' },
     players: { type: 'string' },
     board: { type: 'string' },
     sideLength: { type: 'string' },
@@ -87,6 +89,20 @@ function printReport(r: BatchReport): void {
   } else {
     console.log(`Attacks: ${m.attacks.perGame.toFixed(2)} per game, ${pct(m.attacks.cancelledRate)} cancelled, attacker lift ${m.attacks.attackerLift.toFixed(1)} VP, target lift ${m.attacks.targetLift.toFixed(1)} VP`);
   }
+  if (m.interactionIndex != null) {
+    const shares = [m.tollShare != null ? `toll share ${pct(m.tollShare)}` : null, m.cornerShare != null ? `corner share ${pct(m.cornerShare)}` : null].filter((x) => x);
+    console.log(`Interaction index ${pct(m.interactionIndex)} of coin and VP movement happens on another player's turn${shares.length ? ` · ${shares.join(' · ')} of coins gained` : ''}`);
+  }
+  if (m.buyoutsPerGame != null) {
+    console.log(`Buyouts ${m.buyoutsPerGame.toFixed(2)} per game · landmarks ${m.landmarksPerGame!.toFixed(2)} per game (owned at the end: ${Object.entries(m.landmarkBuyRate!).map(([k, v]) => `${k} ${pct(v)}`).join(', ')})`);
+  }
+  if (m.progression) {
+    const pr = m.progression;
+    const f = (x: number, d = 1) => (Number.isFinite(x) ? x.toFixed(d) : 'n/a');
+    console.log(`Progression: mean VP per player at round ${Object.entries(pr.vpAtRound).filter(([r]) => [3, 6, 9, 12, 15].includes(Number(r))).map(([r, v]) => `${r}=${f(v)}`).join('  ')}`);
+    console.log(`  mean price per buy by round bucket ${Object.entries(pr.buyCostByRound).map(([r, v]) => `≤${r}: ${f(v)}`).join('  ')} · VP buys by third of the game ${pr.vpBuyShareByThird.map((x) => (Number.isFinite(x) ? pct(x) : 'n/a')).join(' / ')}`);
+    console.log(`  engine online (income ≥ 8 in a round) at round ${f(pr.engineOnlineRound)} for ${pct(pr.engineOnlineRate)} of players`);
+  }
   if (m.randomFloor != null) console.log(`Random floor: ${pct(m.randomFloor)}`);
   console.log('\nTiles');
   console.log(table(
@@ -102,7 +118,7 @@ function printReport(r: BatchReport): void {
 }
 
 if (command === 'batch') {
-  const report = batch(specFromArgs());
+  const report = batch(specFromArgs(), { extended: !!values.extended });
   if (values.json) console.log(JSON.stringify(report, null, 2));
   else printReport(report);
 } else if (command === 'balance') {
@@ -110,7 +126,7 @@ if (command === 'batch') {
   const games = base.games ?? DEFAULT_SPEC.games;
   const reports: BatchReport[] = [];
   for (const [endMode, endValue] of [['turnCap', 15], ['vpRace', 30], ['lapRace', 6]] as [EndMode, number][]) {
-    const r = batch({ ...base, games, config: { ...base.config, endMode, endValue } });
+    const r = batch({ ...base, games, config: { ...base.config, endMode, endValue } }, { extended: !!values.extended });
     reports.push(r);
     if (!values.json) printReport(r);
   }
