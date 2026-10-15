@@ -16,7 +16,8 @@ describe('board geometry', () => {
       const corners = s.shared!.slots.flatMap((c, i) => (c.corner != null ? [[i, c.corner]] : []));
       expect(corners).toEqual(Array.from({ length: n }, (_, p) => [p * 10, p]));
       expect(s.shared!.slots.every((c) => c.tile == null && c.owner == null)).toBe(true);
-      expect(s.players.every((p) => p.board.length === 0 && p.position === 0)).toBe(true);
+      expect(s.players.every((p) => p.board.length === 0)).toBe(true);
+      expect(s.players.map((p) => p.position)).toEqual(Array.from({ length: n }, (_, p) => p * 10)); // each token starts on its own corner
       expect(s.players.every((p) => p.cornersPassed === 0 && p.landmarks.length === 0)).toBe(true);
     });
   }

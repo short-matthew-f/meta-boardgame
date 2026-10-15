@@ -8,7 +8,9 @@ TypeScript, Node 20+, Vitest, esbuild. No runtime dependencies.
 
 ```
 engine/     pure engine: types, seeded RNG, board helpers, step / legalActions, describe (readable text)
-tiles/      starter tiles and die mods as JSON, plus a schema validator
+              engine.ts dispatch + roll / turn flow, effects.ts effect interpreter, attack.ts, loopsShop.ts, endgame.ts,
+              shared.ts + sharedBoard.ts the shared-board mode
+tiles/      starter tiles, shared-board tiles and landmarks, and die mods as JSON, plus a schema validator
 bots/       Random, Greedy, Scorer, Aggressor, Turtle, Expander (weight tables), Lookahead (one-ply EV)
 sim/        playGame / replay, batch runner with seat rotation, event-log metrics, CLI
 web/        browser UI (vanilla TypeScript, esbuild into dist/)
@@ -37,6 +39,8 @@ npm run sim -- batch --games 500 --lineup lookahead,scorer,greedy,turtle --endMo
 npm run sim -- balance   # standard lineup × three end modes + placement value + random floor
 npm run sim -- batch --fireOnPass --landBonus 2 --tileEndVp 0.34 --tiles superlinear --endMode vpPool --endValue 60   # experimental variants, off by default
 node --import tsx sim/experiments/density.ts   # the variant experiment (about 100 s)
+npm run sim -- batch --board shared --lineup random,random,random,random   # shared board mode (see below)
+npm run sim -- batch --board shared --sideLength 8 --dice 2d6 --endMode landmarkRace --endValue 3
 npm run sim -- replay --seed 943   # print one game's event log
 npm run sim -- batch --json        # the BatchReport as JSON
 npm run dev:web                    # the browser UI on http://localhost:8000 (rebuilds on save)
@@ -133,6 +137,54 @@ mkdir /tmp/pw && (cd /tmp/pw && npm i playwright)
 npm run build:web
 NODE_PATH=/tmp/pw/node_modules node web/test/smoke.mjs --shots /tmp/shots
 ```
+
+## Shared board mode
+
+`config.boardMode: 'loops' | 'shared'` (default `'loops'`, which is everything
+above, unchanged). In `'shared'` mode every player moves on ONE loop of
+`players × sideLength` slots (`sideLength` 10: a corner plus 9 tile slots per
+side). Slot `p × sideLength` is player p's corner and Start; each token starts
+on its own corner. Tiles are *owned*: a tile's class says whose token triggers
+it and who benefits. The tile set is `tiles/shared.json` (32 tiles, see
+`design/shared-board-tiles.md`), the landmarks `tiles/landmarks.json`; get a
+ready config with `defaultSharedConfig(overrides)` from `tiles/index.ts`.
+
+| Class | Fires | Benefits |
+| --- | --- | --- |
+| civic | any token passes or lands | owner |
+| private | owner's token passes or lands (landing runs the list `landBonus` times, 2 in shared mode) | owner |
+| toll | another player's token lands, never on a pass | owner is paid by the visitor (`pay`, capped, with an `orElse`) |
+| public | any token lands (the list runs twice for the owner on their own tile) | the visitor; `who: 'owner'` effects echo to the owner |
+| landmark | owner's token passes or lands | owner, plus a permanent passive |
+
+- **Corners.** Passing or landing on any corner pays `cornerIncome` (2), double
+  on your own, and counts in `cornersPassed`; your own corner is also a lap
+  (`laps`, so `lapRace` works). There is no lap income. Tokens may share a slot.
+- **Shop.** `buyTile { shopIndex, slot }` goes on any non-corner slot. Empty:
+  place. Yours: replace (no refund). Another player's: a buyout. You pay the
+  shop tile's cost and the displaced owner gets `floor(oldCost × buyoutRefund)`
+  (0.5). A buyout is blocked by the owner's City Walls (`noReplace`) and, with
+  `protectOwnSide`, on the owner's own side. Landmarks are never built over.
+- **Landmarks** are a fixed menu, not in the bag. `buyLandmark { landmarkId,
+  slot }` on an empty slot or over your own tile, once per landmark per player;
+  they cannot be sold. Passives: `noReplace`, `civicBonus`, `dieSides`,
+  `shopDiscount`, `endGameVpPerTiles`, `visitorLandVp`, `tollFree`.
+- **End modes.** All five work: `turnCap`, `vpRace`, `lapRace`, `vpPool` and
+  the sim-only `landmarkRace` (`endValue` = landmarks owned; ends at the end of
+  the round in which a player gets there).
+- **New DSL.** Effects `pay { amount, res?, cap?, orElse? }`, `gain.who`,
+  `teleport to 'nextCorner'`, `who: 'owner'`; amounts `ownedWithClass`,
+  `adjacentWithClass`, `visitorOwnedOnSide`, `coinsHeldDiv`, `cornersPassed`
+  and a `max` cap on any amount; conditions `adjacentToCorner` and `visitor`.
+  Validated by `tiles/schema.ts`, described by `engine/describe.ts`.
+- **Also new.** `config.startDice` (both modes; `--dice 2d6`), new events
+  `toll` and `corner`, `tileFired` carries `owner` and `slot`, and the shared
+  batch report adds `tollsPerGame`, `tollCoinsPerGame`, `cornerIncomePerGame`
+  and `firesByClass` (absent in loops mode, so loops reports are unchanged).
+- **Not done yet.** The browser UI is loops-only (`EndMode` as the UI sees it
+  does not include `landmarkRace`). The bots run in shared mode but have no
+  placement logic: profile bots score no slot, Lookahead tries one slot per
+  tile. Interpretations beyond the design doc are in `DECISIONS.md`.
 
 ## Rules as implemented
 

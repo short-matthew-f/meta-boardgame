@@ -95,6 +95,41 @@ and attacking is ruinous (attacker lift −16 VP, every attack-tile owner has a
 tile, and in a 32-round game that compounds. Attacks need to touch VP, or be
 cheaper than a Shrine, to be worth a slot at all.
 
+## Shared board
+
+Interpretations made building `boardMode: 'shared'` (`engine/shared.ts`) beyond
+`design/shared-board-tiles.md`. Loops mode is untouched: the default-batch
+snapshot test still passes byte for byte.
+
+| Topic | Decision | Reasoning |
+| --- | --- | --- |
+| State shape | `state.shared = { slots }` exists only in shared mode; `players[i].board` is `[]`; a slot's `tile` holds a tile id or a landmark id (ids must not clash, the schema checks) | Loops states and snapshots are unchanged. One field for both avoids a second parallel array. |
+| Start position | Each token starts on its own corner (`p × sideLength`) | "Slot p × sideLength is player p's Start". No income for starting there. |
+| Adjacency | Counts only the firing tile owner's own tiles on the two neighbouring slots; corners, empty slots and landmarks never count | "You" in the design text; also makes a buyout able to break a cluster. A Library (public) still counts its owner's public neighbours although the visitor is paid. |
+| Pilgrim Road | Pays when any non-owner token passes or lands (new cond `visitor`: mover is not the owner) | The design says "only when a visitor passes"; a landing is a pass for this purpose. |
+| Movers | Tiles tagged `mover` fire only on landing and run once there (no `landBonus`, no owner double); this also stops Stables firing mid-move | Same rule as the loops `fireOnPass` / `landBonus` decisions. A Springboard run twice would move 6. |
+| Landing counts | Private lands `landBonus` times, public runs exactly twice for its own owner, landmarks fire once on landing | Design: "landing counting twice for privates". The owner premium is a rule of the class, not tied to `landBonus`. |
+| Festival | The visitor gains 2, every other player (the owner included) gains 1 | "Everyone gains 1, the visitor gains 2" read as the visitor's total being 2. Built from `gain` with a new optional `who`. |
+| Inn | `pay 2` plus `gain 1 VP` to `who: 'target'` (the visitor) | `gain` had no `who`; adding it keeps Festival, Inn, Springboard and Harbour in the existing DSL. |
+| `pay` | Full amount is `min(amount, cap)`. If the target has less than that and `orElse` exists, `orElse` runs and nothing is paid; without `orElse` the target pays what it has | "Pay 2 or move back 3": a visitor with 1 coin keeps it and moves. |
+| Toll event | One `toll` event per landing on another player's toll tile, amount in coins paid, optional `vp` (Tithe); skipped tolls emit it with amount 0 and no `tileFired` | The metric counts landings; coins paid come from `amount`. Order: `tileFired`, `toll`, `resource` events. |
+| `tollFree` | A Harbour Master landmark is checked first (the flag is kept), then the flag, which is consumed. A skipped toll skips the whole tile, so a Ferry does not jump | Watchtower's flag should not be wasted. A toll is one tile. |
+| Corners | Backward moves and teleports pay nothing; `moved.passedStart` means the own corner was passed; the `lap` event carries income 0 (the `corner` event has the coins, so nothing is counted twice); `cornersPassed` also counts own-corner passes | `describeEvent` omits "+0 coins" for a lap with no income. |
+| `nextCorner` | Strictly after the current slot (from a corner, the next one); the arrival slot does not fire | Ferry and Harbour sit on tile slots, so only the wrap matters. |
+| Moves and chains | Movement resolves recursively in path order; nested moves share `maxTriggerChain` with roll-agains | No queue is needed because shared mode has no target prompts. |
+| Buyout | `bought.displaced` is the displaced player's index; `bought.cost` is the price actually paid (after Guildhall); the refund uses the old item's printed cost and a `resource` event with source `buyout`; the old tile goes to the discard pile | The metrics rebuild coins from `cost`, so it must be the real price. |
+| Blocked slots | Corners and landmarks are never buildable, not even by their owner; `protectOwnSide` protects a tile on its owner's own side only (your own tile on someone else's side is open to buyout, another's tile on your side is not protected from you) | A landmark is a permanent investment with a passive; removing it would also need a rule for re-buying. |
+| Landmarks | Bought through the shop action (they use `shopActions`), not discounted by Guildhall, placed on an empty slot or over the player's own tile (that tile is discarded); never sold | Design: fixed menu, one of each per player. |
+| Passives | `dieSides` sets every die of the owner to that size (a round dice modifier still wins); `civicBonus` pays per civic fire, pass or land, with the landmark as the `resource` source; `visitorLandVp` is read from the landmark at the landing slot, with no `tileFired`; `endGameVpPerTiles` counts every owned slot including landmarks | "Tiles you own" for Archive. Mint is the only `civicBonus`. |
+| End-game VP | `tileEndVp` in shared mode sums the printed cost of everything owned; Archive's VP follows it, both as `endgame` resources before the last `roundEnded`; rank tie-break "fewer tiles" counts owned slots | Same hook and ordering as loops. |
+| `landmarkRace` | Counts landmarks bought; trips at the end of any turn, ends at the end of that round; never trips in loops mode; the CLI defaults `endValue` to 3 | Typed `SimEndMode`, set with `LANDMARK_RACE_MODE`, like `vpPool`. |
+| Lighthouse | Reads the last roll total of the active player | `dieTotal` already does. |
+| Customs House | Uncapped | The design gives no cap. |
+| Defaults | `defaultSharedConfig` sets `landBonus` 2; `BASE_CONFIG` is unchanged. `sideLength` must be at least 2 | The brief. |
+| Metrics | New fields are absent in loops mode; `tollsPerGame` counts every toll event including free ones; `firesByClass` counts `tileFired` events by class plus `landmark`; `flagProblems` skips the attack checks in shared mode | A new key would change the loops snapshot. There is no attack class to measure. |
+| Bots | No shared placement. Profile bots score no placement term (slot picked by tie-break); `staticValue` also reads `effects`; Lookahead prunes to one slot per tile (empty preferred) and values owned tiles at 0.45 of cost as before | The next task designs placement. |
+| UI | `EndMode` as `web/` sees it is unchanged and `web/` is untouched; `Event` and `Action` gained members, the web switches are non-exhaustive | Per the brief. |
+
 ## Experimental variants (all off by default)
 
 Four rule variants added to test the "a tile fires about twice per game" finding.

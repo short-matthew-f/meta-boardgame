@@ -81,7 +81,7 @@ export function createGame(config: GameConfig, seed: number): GameState {
     players.push({
       id: i,
       board: shared ? [] : new Array<TileId | null>(config.boardSize).fill(null),
-      position: 0,
+      position: shared ? i * config.sideLength : 0, // shared mode: each token starts on its own corner
       coins: config.startCoins,
       vp: 0,
       laps: 0,
