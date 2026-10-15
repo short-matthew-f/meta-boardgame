@@ -1,0 +1,53 @@
+[
+  { "id": "market", "name": "Market", "cost": 3, "copies": 5, "tags": ["income"],
+    "onLand": [{ "op": "gain", "res": "coins", "amount": 2 }] },
+  { "id": "mine", "name": "Mine", "cost": 5, "copies": 4, "tags": ["income"],
+    "onLand": [{ "op": "gain", "res": "coins", "amount": 3 }] },
+  { "id": "tollbooth", "name": "Tollbooth", "cost": 6, "copies": 3, "tags": ["income"],
+    "onPass": [{ "op": "gain", "res": "coins", "amount": 1 }] },
+  { "id": "bank", "name": "Bank", "cost": 7, "copies": 2, "tags": ["income"],
+    "onLap": [{ "op": "gain", "res": "coins", "amount": { "ownedWithTag": "income", "per": 1 } }] },
+
+  { "id": "shrine", "name": "Shrine", "cost": 3, "copies": 5, "tags": ["score"],
+    "onLand": [{ "op": "gain", "res": "vp", "amount": 1 }] },
+  { "id": "monument", "name": "Monument", "cost": 6, "copies": 4, "tags": ["score"],
+    "onLand": [{ "op": "gain", "res": "vp", "amount": 2 }] },
+  { "id": "cathedral", "name": "Cathedral", "cost": 10, "copies": 2, "tags": ["score"],
+    "onLand": [{ "op": "gain", "res": "vp", "amount": 3 }] },
+  { "id": "archive", "name": "Archive", "cost": 8, "copies": 2, "tags": ["score"],
+    "onLap": [{ "op": "gain", "res": "vp", "amount": { "laps": true, "per": 0.5 } }] },
+
+  { "id": "springboard", "name": "Springboard", "cost": 4, "copies": 3, "tags": ["mover"],
+    "onLand": [{ "op": "move", "by": 2, "who": "self" }] },
+  { "id": "portal", "name": "Portal", "cost": 5, "copies": 2, "tags": ["mover"],
+    "onLand": [{ "op": "teleport", "to": "start", "who": "self" }] },
+  { "id": "tailwind", "name": "Tailwind", "cost": 6, "copies": 2, "tags": ["mover"],
+    "onLand": [{ "op": "rollAgain" }] },
+
+  { "id": "workshop", "name": "Workshop", "cost": 5, "copies": 3, "tags": ["combo"],
+    "onLand": [{ "op": "gain", "res": "coins", "amount": { "adjacentWithTag": "income", "per": 1 } }] },
+  { "id": "plaza", "name": "Plaza", "cost": 6, "copies": 3, "tags": ["combo"],
+    "onLand": [{ "op": "gain", "res": "vp", "amount": { "adjacentWithTag": "score", "per": 1 } }] },
+  { "id": "guildhall", "name": "Guildhall", "cost": 8, "copies": 2, "tags": ["combo"],
+    "onLand": [{ "op": "if", "cond": { "adjacentWithTag": "combo", "min": 2 },
+                 "then": [{ "op": "gain", "res": "vp", "amount": 3 }] }] },
+
+  { "id": "bandit-camp", "name": "Bandit Camp", "cost": 4, "copies": 3, "tags": ["attack"],
+    "onLand": [{ "op": "steal", "res": "coins", "amount": 2 }] },
+  { "id": "trebuchet", "name": "Trebuchet", "cost": 6, "copies": 2, "tags": ["attack"],
+    "onLand": [{ "op": "move", "by": -3, "who": "target" }] },
+  { "id": "saboteur", "name": "Saboteur", "cost": 7, "copies": 2, "tags": ["attack"],
+    "onLand": [{ "op": "lockTile", "who": "target", "rounds": 2 }] },
+  { "id": "tax-collector", "name": "Tax Collector", "cost": 9, "copies": 1, "tags": ["attack"],
+    "onLand": [{ "op": "steal", "res": "vp", "amount": 1 }] },
+
+  { "id": "wall", "name": "Wall", "cost": 4, "copies": 3, "tags": ["defense"],
+    "onTargeted": [{ "op": "reflect", "fraction": 0.5 }] },
+  { "id": "moat", "name": "Moat", "cost": 5, "copies": 2, "tags": ["defense"],
+    "onTargeted": [{ "op": "lose", "res": "coins", "amount": 2, "who": "target" }] },
+  { "id": "watchtower", "name": "Watchtower", "cost": 6, "copies": 2, "tags": ["defense"],
+    "onLap": [{ "op": "setFlag", "flag": "shielded", "value": 1, "who": "self", "rounds": 1 }] },
+
+  { "id": "expansion", "name": "Expansion", "cost": 4, "copies": 4, "tags": ["expansion"] },
+  { "id": "expansion-plus", "name": "Expansion+", "cost": 7, "copies": 2, "tags": ["expansion"], "insertTile": "market" }
+]

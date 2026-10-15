@@ -1,0 +1,11 @@
+[
+  { "id": "reroll", "name": "Reroll token", "cost": 3, "scope": "consumable", "grants": "reroll", "effects": [] },
+  { "id": "second-die", "name": "Second die", "cost": 8, "scope": "persistent",
+    "effects": [{ "op": "addDie", "sides": 4 }] },
+  { "id": "heavy-die", "name": "Heavy die", "cost": 10, "scope": "persistent",
+    "effects": [{ "op": "replaceDie", "from": 6, "to": 8 }] },
+  { "id": "fog", "name": "Fog", "cost": 5, "scope": "round",
+    "effects": [{ "op": "setDice", "who": "others", "sides": 4, "rounds": 1 }] },
+  { "id": "haste", "name": "Haste", "cost": 4, "scope": "round",
+    "effects": [{ "op": "setDice", "who": "self", "sides": 8, "rounds": 1 }] }
+]

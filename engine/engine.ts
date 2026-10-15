@@ -1,0 +1,765 @@
+// Pure game engine: createGame / legalActions / step.
+// `step` never mutates its input; it clones, mutates the clone, and returns
+// the clone with the events it caused. All randomness goes through
+// state.rngState so (seed, actions[]) replays exactly.
+
+import type {
+  Action, Amount, Cond, Effect, Event, GameConfig, GameState, Modifier, PendingChoice,
+  PlayerState, QueuedTrigger, RollContext, Standing, StepResult, TileId, Trigger, Who,
+} from './types.ts';
+import { rngInt, rngShuffle, seedToState } from './rng.ts';
+import {
+  activeTile, countAdjacentWithTag, countOwnedWithTag, effectiveDice, hasTag, isLocked,
+  ownedTileCount, tileDef,
+} from './board.ts';
+
+// ---------------------------------------------------------------------------
+// Config
+
+export const BASE_CONFIG: Omit<GameConfig, 'tileSet' | 'modSet'> = {
+  players: 4,
+  boardSize: 8,
+  startCoins: 5,
+  lapIncome: 3,
+  shopSize: 6,
+  shopActions: 1,
+  endMode: 'turnCap',
+  endValue: 15,
+  maxRounds: 50,
+  maxTriggerChain: 12,
+  sellRefund: 0.5,
+};
+
+export function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
+  return { ...BASE_CONFIG, tileSet: [], modSet: [], ...overrides };
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+
+function freshRollContext(): RollContext {
+  return { queue: [], choice: null, rollAgain: false, lastTotal: 0, chain: 0 };
+}
+
+export function createGame(config: GameConfig, seed: number): GameState {
+  if (config.players < 2) throw new Error('need at least 2 players');
+  let rng = seedToState(seed);
+  const bagIds: TileId[] = [];
+  for (const t of config.tileSet) for (let i = 0; i < t.copies; i++) bagIds.push(t.id);
+  let bag: TileId[];
+  [rng, bag] = rngShuffle(rng, bagIds);
+  const shop = bag.splice(0, config.shopSize);
+  const players: PlayerState[] = [];
+  for (let i = 0; i < config.players; i++) {
+    players.push({
+      id: i,
+      board: new Array<TileId | null>(config.boardSize).fill(null),
+      position: 0,
+      coins: config.startCoins,
+      vp: 0,
+      laps: 0,
+      dice: [{ sides: 6 }],
+      mods: [],
+      flags: {},
+    });
+  }
+  return {
+    config,
+    rngState: rng,
+    round: 1,
+    activePlayer: 0,
+    phase: 'roll',
+    shopActionsLeft: 0,
+    players,
+    shop,
+    bag,
+    discard: [],
+    roundModifiers: [],
+    pending: freshRollContext(),
+    endTrigger: config.endMode === 'turnCap' ? { reason: 'turnCap', endsAfterRound: config.endValue } : null,
+    winner: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cloning
+
+export function cloneState(s: GameState): GameState {
+  return {
+    ...s,
+    players: s.players.map((p) => ({
+      ...p,
+      board: p.board.slice(),
+      dice: p.dice.map((d) => ({ ...d })),
+      mods: p.mods.slice(),
+      flags: { ...p.flags },
+    })),
+    shop: s.shop.slice(),
+    bag: s.bag.slice(),
+    discard: s.discard.slice(),
+    roundModifiers: s.roundModifiers.slice(),
+    pending: s.pending ? { ...s.pending, queue: s.pending.queue.slice(), choice: s.pending.choice ? { ...s.pending.choice } : null } : null,
+    endTrigger: s.endTrigger ? { ...s.endTrigger } : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Action identity
+
+export function actionKey(a: Action): string {
+  const keys = Object.keys(a).sort();
+  return keys.map((k) => `${k}=${String((a as Record<string, unknown>)[k])}`).join('|');
+}
+
+export function sameAction(a: Action, b: Action): boolean {
+  return actionKey(a) === actionKey(b);
+}
+
+// ---------------------------------------------------------------------------
+// Legal actions
+
+export function legalActions(state: GameState): Action[] {
+  if (state.phase === 'ended') return [];
+  const me = state.activePlayer;
+  if (state.phase === 'roll') {
+    const choice = state.pending?.choice ?? null;
+    if (choice) {
+      if (choice.kind === 'chooseTarget') {
+        const out: Action[] = [];
+        for (let q = 0; q < state.players.length; q++) if (q !== me) out.push({ type: 'chooseTarget', player: q });
+        return out;
+      }
+      return [{ type: 'reroll' }, { type: 'keepRoll' }];
+    }
+    return [{ type: 'roll' }];
+  }
+  // shop
+  const out: Action[] = [];
+  const p = state.players[me]!;
+  if (state.shopActionsLeft > 0) {
+    const size = p.board.length;
+    for (let i = 0; i < state.shop.length; i++) {
+      const def = tileDef(state.config, state.shop[i]!);
+      if (def.cost > p.coins) continue;
+      if (hasTag(def, 'expansion')) {
+        for (let s = 0; s < size; s++) out.push({ type: 'buyExpansion', shopIndex: i, afterSlot: s });
+      } else {
+        for (let s = 1; s < size; s++) out.push({ type: 'buyTile', shopIndex: i, slot: s });
+      }
+    }
+    for (const m of state.config.modSet) {
+      if (m.cost > p.coins) continue;
+      if ((m.scope === 'persistent' || m.scope === 'consumable') && p.mods.includes(m.id)) continue;
+      out.push({ type: 'buyMod', modId: m.id });
+    }
+    for (let s = 1; s < size; s++) if (p.board[s] != null) out.push({ type: 'sellTile', slot: s });
+  }
+  out.push({ type: 'pass' });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Step
+
+type Ctx = { st: GameState; events: Event[]; forcedDice: number[] | null; allowReroll: boolean };
+
+export function step(state: GameState, action: Action): StepResult {
+  const legal = legalActions(state);
+  const key = actionKey(action);
+  if (!legal.some((a) => actionKey(a) === key)) {
+    throw new Error(`illegal action ${key} in phase ${state.phase} (round ${state.round}, player ${state.activePlayer})`);
+  }
+  const ctx: Ctx = { st: cloneState(state), events: [], forcedDice: null, allowReroll: true };
+  applyAction(ctx, action);
+  return { state: ctx.st, events: ctx.events };
+}
+
+function applyAction(ctx: Ctx, action: Action): void {
+  const st = ctx.st;
+  switch (action.type) {
+    case 'roll':
+      doRoll(ctx);
+      return;
+    case 'reroll': {
+      const p = st.players[st.activePlayer]!;
+      const idx = p.mods.findIndex((id) => st.config.modSet.find((m) => m.id === id)?.grants === 'reroll');
+      if (idx >= 0) p.mods.splice(idx, 1);
+      st.pending!.choice = null;
+      doRoll(ctx);
+      return;
+    }
+    case 'keepRoll': {
+      const choice = st.pending!.choice as Extract<PendingChoice, { kind: 'reroll' }>;
+      st.pending!.choice = null;
+      applyMove(ctx, choice.dice.reduce((a, b) => a + b, 0));
+      return;
+    }
+    case 'chooseTarget': {
+      const choice = st.pending!.choice as Extract<PendingChoice, { kind: 'chooseTarget' }>;
+      st.pending!.choice = null;
+      runAttack(ctx, choice.player, choice.slot, choice.tile, choice.trigger, action.player);
+      drainQueue(ctx);
+      return;
+    }
+    case 'buyTile':
+      buyTile(ctx, action.shopIndex, action.slot);
+      afterShopAction(ctx);
+      return;
+    case 'buyExpansion':
+      buyExpansion(ctx, action.shopIndex, action.afterSlot);
+      afterShopAction(ctx);
+      return;
+    case 'buyMod':
+      buyMod(ctx, action.modId);
+      afterShopAction(ctx);
+      return;
+    case 'sellTile':
+      sellTile(ctx, action.slot);
+      afterShopAction(ctx);
+      return;
+    case 'pass':
+      endTurn(ctx);
+      return;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Roll phase
+
+function doRoll(ctx: Ctx): void {
+  const st = ctx.st;
+  const me = st.activePlayer;
+  const dice = effectiveDice(st, me);
+  let values: number[];
+  if (ctx.forcedDice) {
+    values = ctx.forcedDice;
+    ctx.forcedDice = null;
+  } else {
+    values = [];
+    for (const d of dice) {
+      let v: number;
+      [st.rngState, v] = rngInt(st.rngState, d.sides);
+      values.push(v + 1);
+    }
+  }
+  const total = values.reduce((a, b) => a + b, 0);
+  ctx.events.push({ t: 'rolled', player: me, dice: values, total, round: st.round });
+  st.pending!.lastTotal = total;
+  const p = st.players[me]!;
+  const hasReroll = ctx.allowReroll && p.mods.some((id) => st.config.modSet.find((m) => m.id === id)?.grants === 'reroll');
+  if (hasReroll) {
+    st.pending!.choice = { kind: 'reroll', player: me, dice: values };
+    return;
+  }
+  applyMove(ctx, total);
+}
+
+/** Move the active player's token forward, queue everything it triggers, then resolve. */
+function applyMove(ctx: Ctx, by: number): void {
+  enqueueForwardMove(ctx, ctx.st.activePlayer, by);
+  drainQueue(ctx);
+}
+
+function enqueueForwardMove(ctx: Ctx, player: number, by: number): void {
+  const st = ctx.st;
+  const p = st.players[player]!;
+  const size = p.board.length;
+  const from = p.position;
+  const q = st.pending!.queue;
+  let passedStart = false;
+  for (let i = 1; i <= by; i++) {
+    const slot = (from + i) % size;
+    if (slot === 0) {
+      passedStart = true;
+      q.push({ kind: 'lapIncome', player });
+      for (let s = 1; s < size; s++) {
+        const id = p.board[s];
+        if (id != null && tileDef(st.config, id).onLap) q.push({ kind: 'tile', player, slot: s, tile: id, trigger: 'onLap' });
+      }
+    }
+    if (i < by && slot !== 0) {
+      const id = p.board[slot];
+      if (id != null && tileDef(st.config, id).onPass) q.push({ kind: 'tile', player, slot, tile: id, trigger: 'onPass' });
+    }
+  }
+  const to = (from + by) % size;
+  p.position = to;
+  ctx.events.push({ t: 'moved', player, from, to, passedStart });
+  q.push({ kind: 'land', player, slot: to });
+}
+
+function drainQueue(ctx: Ctx): void {
+  const st = ctx.st;
+  const ctxPending = st.pending!;
+  while (ctxPending.queue.length > 0 && !ctxPending.choice) {
+    const item = ctxPending.queue.shift()!;
+    if (item.kind === 'lapIncome') {
+      const p = st.players[item.player]!;
+      p.laps += 1;
+      p.coins += st.config.lapIncome;
+      ctx.events.push({ t: 'lap', player: item.player, laps: p.laps, income: st.config.lapIncome });
+      if (st.config.lapIncome !== 0) ctx.events.push({ t: 'resource', player: item.player, res: 'coins', delta: st.config.lapIncome, source: 'lap' });
+      continue;
+    }
+    if (item.kind === 'land') {
+      if (item.slot === 0) continue;
+      const def = activeTile(st, item.player, item.slot);
+      if (!def || !def.onLand) continue;
+      resolveTileTrigger(ctx, { kind: 'tile', player: item.player, slot: item.slot, tile: def.id, trigger: 'onLand' });
+      continue;
+    }
+    resolveTileTrigger(ctx, item);
+  }
+  if (ctxPending.choice) return;
+  if (ctxPending.rollAgain) {
+    ctxPending.rollAgain = false;
+    ctxPending.chain += 1;
+    if (ctxPending.chain <= st.config.maxTriggerChain) {
+      doRoll(ctx);
+      return;
+    }
+  }
+  // enter shop phase
+  st.phase = 'shop';
+  st.shopActionsLeft = st.config.shopActions;
+}
+
+function resolveTileTrigger(ctx: Ctx, item: Extract<QueuedTrigger, { kind: 'tile' }>): void {
+  const st = ctx.st;
+  if (isLocked(st, item.player, item.slot)) return;
+  const def = tileDef(st.config, item.tile);
+  const effects = def[item.trigger];
+  if (!effects) return;
+  if (needsTarget(effects)) {
+    st.pending!.choice = { kind: 'chooseTarget', player: item.player, slot: item.slot, tile: item.tile, trigger: item.trigger };
+    return;
+  }
+  ctx.events.push({ t: 'tileFired', player: item.player, tile: item.tile, trigger: item.trigger });
+  runEffects(ctx, effects, { self: item.player, target: null, slot: item.slot, source: item.tile, coinLoss: new Map() });
+}
+
+export function needsTarget(effects: Effect[]): boolean {
+  for (const e of effects) {
+    if ('who' in e && e.who === 'target') return true;
+    if (e.op === 'steal') return true;
+    if (e.op === 'if' && (needsTarget(e.then) || (e.else ? needsTarget(e.else) : false))) return true;
+  }
+  return false;
+}
+
+function runAttack(ctx: Ctx, attacker: number, slot: number, tile: TileId, trigger: Trigger, target: number): void {
+  const st = ctx.st;
+  const def = tileDef(st.config, tile);
+  const effects = def[trigger] ?? [];
+  // Shield: cancels the whole attack and is consumed.
+  if (getFlag(st, target, 'shielded') > 0) {
+    consumeFlag(st, target, 'shielded');
+    ctx.events.push({ t: 'attacked', attacker, target, tile, cancelled: true });
+    return;
+  }
+  ctx.events.push({ t: 'attacked', attacker, target, tile, cancelled: false });
+  ctx.events.push({ t: 'tileFired', player: attacker, tile, trigger });
+  // Defender's onTargeted tiles. `reflect` runs first; the rest after the attack.
+  const tp = st.players[target]!;
+  const defenses: { slot: number; tile: TileId; effects: Effect[] }[] = [];
+  for (let s = 1; s < tp.board.length; s++) {
+    const d = activeTile(st, target, s);
+    if (d?.onTargeted) defenses.push({ slot: s, tile: d.id, effects: d.onTargeted });
+  }
+  let reflect = 0;
+  for (const d of defenses) for (const e of d.effects) if (e.op === 'reflect') reflect += e.fraction;
+  reflect = Math.min(1, reflect);
+
+  const ec: EffectCtx = { self: attacker, target, slot, source: tile, coinLoss: new Map() };
+  runEffects(ctx, effects, ec);
+
+  const lost = ec.coinLoss.get(target) ?? 0;
+  if (reflect > 0 && lost > 0) {
+    const back = Math.floor(lost * reflect);
+    const reflector = defenses.find((d) => d.effects.some((e) => e.op === 'reflect'))!;
+    if (back > 0) {
+      ctx.events.push({ t: 'tileFired', player: target, tile: reflector.tile, trigger: 'onTargeted' });
+      changeResource(ctx, attacker, 'coins', -back, reflector.tile);
+    }
+  }
+  for (const d of defenses) {
+    const rest = d.effects.filter((e) => e.op !== 'reflect');
+    if (rest.length === 0) continue;
+    ctx.events.push({ t: 'tileFired', player: target, tile: d.tile, trigger: 'onTargeted' });
+    runEffects(ctx, rest, { self: target, target: attacker, slot: d.slot, source: d.tile, coinLoss: new Map() });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Effect DSL
+
+type EffectCtx = {
+  self: number;
+  target: number | null;
+  slot: number | null; // slot of the firing tile on self's board, if any
+  source: TileId | string;
+  coinLoss: Map<number, number>; // coins lost per player during this list (for reflect)
+};
+
+function resolveWho(ctx: Ctx, who: Who, ec: EffectCtx): number[] {
+  const n = ctx.st.players.length;
+  switch (who) {
+    case 'self': return [ec.self];
+    case 'target':
+      if (ec.target == null) throw new Error('effect needs a target but none was chosen');
+      return [ec.target];
+    case 'others': return Array.from({ length: n }, (_, i) => i).filter((i) => i !== ec.self);
+    case 'all': return Array.from({ length: n }, (_, i) => i);
+  }
+}
+
+export function evalAmount(st: GameState, amount: Amount, ec: { self: number; slot: number | null }): number {
+  if (typeof amount === 'number') return amount;
+  if ('adjacentWithTag' in amount) {
+    if (ec.slot == null) return 0;
+    return Math.floor(countAdjacentWithTag(st, ec.self, ec.slot, amount.adjacentWithTag) * amount.per);
+  }
+  if ('ownedWithTag' in amount) return Math.floor(countOwnedWithTag(st, ec.self, amount.ownedWithTag) * amount.per);
+  return Math.floor(st.players[ec.self]!.laps * amount.per);
+}
+
+function evalCond(st: GameState, cond: Cond, ec: EffectCtx): boolean {
+  if ('flag' in cond) {
+    const v = getFlag(st, ec.self, cond.flag);
+    return cond.op === '>' ? v > cond.value : v === cond.value;
+  }
+  if ('adjacentWithTag' in cond) {
+    if (ec.slot == null) return false;
+    return countAdjacentWithTag(st, ec.self, ec.slot, cond.adjacentWithTag) >= cond.min;
+  }
+  const total = st.pending?.lastTotal ?? 0;
+  return cond.dieTotal === '>=' ? total >= cond.value : total <= cond.value;
+}
+
+export function getFlag(st: GameState, player: number, flag: string): number {
+  const m = st.roundModifiers.find((x) => x.kind === 'flag' && x.player === player && x.flag === flag);
+  if (m && m.kind === 'flag') return m.value;
+  return st.players[player]!.flags[flag] ?? 0;
+}
+
+function consumeFlag(st: GameState, player: number, flag: string): void {
+  st.roundModifiers = st.roundModifiers.filter((x) => !(x.kind === 'flag' && x.player === player && x.flag === flag));
+  if (st.players[player]!.flags[flag] != null) st.players[player]!.flags[flag] = 0;
+}
+
+function changeResource(ctx: Ctx, player: number, res: 'coins' | 'vp', delta: number, source: string): number {
+  const p = ctx.st.players[player]!;
+  const before = p[res];
+  const after = Math.max(0, before + delta);
+  const applied = after - before;
+  if (applied === 0) return 0;
+  p[res] = after;
+  ctx.events.push({ t: 'resource', player, res, delta: applied, source });
+  return applied;
+}
+
+function untilRef(st: GameState, rounds: number) {
+  return { round: st.round + rounds, player: st.activePlayer };
+}
+
+function runEffects(ctx: Ctx, effects: Effect[], ec: EffectCtx): void {
+  const st = ctx.st;
+  for (const e of effects) {
+    switch (e.op) {
+      case 'gain': {
+        changeResource(ctx, ec.self, e.res, evalAmount(st, e.amount, ec), ec.source);
+        break;
+      }
+      case 'lose': {
+        const amt = evalAmount(st, e.amount, ec);
+        for (const q of resolveWho(ctx, e.who, ec)) {
+          const applied = changeResource(ctx, q, e.res, -amt, ec.source);
+          if (e.res === 'coins') ec.coinLoss.set(q, (ec.coinLoss.get(q) ?? 0) - applied);
+        }
+        break;
+      }
+      case 'steal': {
+        const [t] = resolveWho(ctx, 'target', ec);
+        const amt = Math.min(evalAmount(st, e.amount, ec), st.players[t!]![e.res]);
+        if (amt > 0) {
+          changeResource(ctx, t!, e.res, -amt, ec.source);
+          changeResource(ctx, ec.self, e.res, amt, ec.source);
+          if (e.res === 'coins') ec.coinLoss.set(t!, (ec.coinLoss.get(t!) ?? 0) + amt);
+        }
+        break;
+      }
+      case 'move': {
+        const by = evalAmount(st, e.by, ec);
+        for (const q of resolveWho(ctx, e.who, ec)) moveToken(ctx, q, by);
+        break;
+      }
+      case 'teleport': {
+        for (const q of resolveWho(ctx, e.who, ec)) {
+          const p = st.players[q]!;
+          const from = p.position;
+          let to = 0;
+          if (e.to === 'random') [st.rngState, to] = rngInt(st.rngState, p.board.length);
+          p.position = to;
+          ctx.events.push({ t: 'moved', player: q, from, to, passedStart: false });
+        }
+        break;
+      }
+      case 'rollAgain': {
+        if (st.pending) st.pending.rollAgain = true;
+        break;
+      }
+      case 'setFlag': {
+        for (const q of resolveWho(ctx, e.who, ec)) {
+          if (e.rounds != null) {
+            st.roundModifiers = st.roundModifiers.filter((m) => !(m.kind === 'flag' && m.player === q && m.flag === e.flag));
+            st.roundModifiers.push({ kind: 'flag', player: q, flag: e.flag, value: e.value, until: untilRef(st, e.rounds) });
+          } else {
+            st.players[q]!.flags[e.flag] = e.value;
+          }
+        }
+        break;
+      }
+      case 'lockTile': {
+        for (const q of resolveWho(ctx, e.who, ec)) {
+          const p = st.players[q]!;
+          const slots: number[] = [];
+          for (let s = 1; s < p.board.length; s++) if (p.board[s] != null && !isLocked(st, q, s)) slots.push(s);
+          if (slots.length === 0) continue;
+          let i: number;
+          [st.rngState, i] = rngInt(st.rngState, slots.length);
+          const slot = slots[i]!;
+          st.roundModifiers.push({ kind: 'lock', player: q, slot, until: untilRef(st, e.rounds) });
+          ctx.events.push({ t: 'locked', player: q, slot, tile: p.board[slot]!, by: ec.self });
+        }
+        break;
+      }
+      case 'reflect':
+        break; // handled by runAttack
+      case 'if': {
+        if (evalCond(st, e.cond, ec)) runEffects(ctx, e.then, ec);
+        else if (e.else) runEffects(ctx, e.else, ec);
+        break;
+      }
+      case 'addDie': {
+        st.players[ec.self]!.dice.push({ sides: e.sides });
+        break;
+      }
+      case 'setDice': {
+        for (const q of resolveWho(ctx, e.who, ec)) {
+          st.roundModifiers = st.roundModifiers.filter((m) => !(m.kind === 'dice' && m.player === q));
+          st.roundModifiers.push({ kind: 'dice', player: q, sides: e.sides, until: untilRef(st, e.rounds) });
+        }
+        break;
+      }
+      case 'replaceDie': {
+        const dice = st.players[ec.self]!.dice;
+        const i = dice.findIndex((d) => d.sides === e.from);
+        if (i >= 0) dice[i] = { sides: e.to };
+        break;
+      }
+    }
+  }
+}
+
+/**
+ * Move a token by `by` slots. The active player's own forward moves trigger
+ * passes, laps and landings like a roll; every other move (backward, or of a
+ * non-active player) just relocates the token.
+ */
+function moveToken(ctx: Ctx, player: number, by: number): void {
+  const st = ctx.st;
+  if (by === 0) return;
+  const p = st.players[player]!;
+  const size = p.board.length;
+  if (player === st.activePlayer && by > 0 && st.pending) {
+    st.pending.chain += 1;
+    if (st.pending.chain > st.config.maxTriggerChain) {
+      const from = p.position;
+      p.position = (from + by) % size;
+      ctx.events.push({ t: 'moved', player, from, to: p.position, passedStart: false });
+      return;
+    }
+    enqueueForwardMove(ctx, player, by);
+    return;
+  }
+  const from = p.position;
+  p.position = (((from + by) % size) + size) % size;
+  ctx.events.push({ t: 'moved', player, from, to: p.position, passedStart: false });
+}
+
+// ---------------------------------------------------------------------------
+// Shop phase
+
+function pay(ctx: Ctx, player: number, cost: number, source: string): void {
+  if (cost !== 0) changeResource(ctx, player, 'coins', -cost, source);
+}
+
+function buyTile(ctx: Ctx, shopIndex: number, slot: number): void {
+  const st = ctx.st;
+  const me = st.activePlayer;
+  const p = st.players[me]!;
+  const id = st.shop[shopIndex]!;
+  const def = tileDef(st.config, id);
+  pay(ctx, me, def.cost, id);
+  st.shop.splice(shopIndex, 1);
+  const old = p.board[slot];
+  if (old != null) {
+    st.discard.push(old);
+    st.roundModifiers = st.roundModifiers.filter((m) => !(m.kind === 'lock' && m.player === me && m.slot === slot));
+  }
+  p.board[slot] = id;
+  ctx.events.push({ t: 'bought', player: me, item: id, cost: def.cost, slot });
+}
+
+function buyExpansion(ctx: Ctx, shopIndex: number, afterSlot: number): void {
+  const st = ctx.st;
+  const me = st.activePlayer;
+  const p = st.players[me]!;
+  const id = st.shop[shopIndex]!;
+  const def = tileDef(st.config, id);
+  pay(ctx, me, def.cost, id);
+  st.shop.splice(shopIndex, 1);
+  st.discard.push(id);
+  p.board.splice(afterSlot + 1, 0, def.insertTile ?? null);
+  if (p.position > afterSlot) p.position += 1;
+  st.roundModifiers = st.roundModifiers.map((m) =>
+    m.kind === 'lock' && m.player === me && m.slot > afterSlot ? { ...m, slot: m.slot + 1 } : m,
+  );
+  ctx.events.push({ t: 'bought', player: me, item: id, cost: def.cost, slot: afterSlot + 1 });
+  ctx.events.push({ t: 'expanded', player: me, afterSlot, size: p.board.length });
+}
+
+function buyMod(ctx: Ctx, modId: string): void {
+  const st = ctx.st;
+  const me = st.activePlayer;
+  const def = st.config.modSet.find((m) => m.id === modId)!;
+  pay(ctx, me, def.cost, modId);
+  ctx.events.push({ t: 'bought', player: me, item: modId, cost: def.cost });
+  runEffects(ctx, def.effects, { self: me, target: null, slot: null, source: modId, coinLoss: new Map() });
+  if (def.scope !== 'round') st.players[me]!.mods.push(modId);
+}
+
+function sellTile(ctx: Ctx, slot: number): void {
+  const st = ctx.st;
+  const me = st.activePlayer;
+  const p = st.players[me]!;
+  const id = p.board[slot]!;
+  const def = tileDef(st.config, id);
+  const refund = Math.floor(def.cost * st.config.sellRefund);
+  p.board[slot] = null;
+  st.discard.push(id);
+  st.roundModifiers = st.roundModifiers.filter((m) => !(m.kind === 'lock' && m.player === me && m.slot === slot));
+  ctx.events.push({ t: 'sold', player: me, tile: id, refund });
+  if (refund > 0) changeResource(ctx, me, 'coins', refund, 'sale');
+}
+
+function afterShopAction(ctx: Ctx): void {
+  ctx.st.shopActionsLeft -= 1;
+  if (ctx.st.shopActionsLeft <= 0) endTurn(ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Turn / round end
+
+function refillShop(ctx: Ctx): void {
+  const st = ctx.st;
+  const before = st.shop.length;
+  while (st.shop.length < st.config.shopSize) {
+    if (st.bag.length === 0) {
+      if (st.discard.length === 0) break;
+      [st.rngState, st.bag] = rngShuffle(st.rngState, st.discard);
+      st.discard = [];
+    }
+    st.shop.push(st.bag.shift()!);
+  }
+  if (st.shop.length !== before) ctx.events.push({ t: 'shopRefilled', shop: st.shop.slice() });
+}
+
+function expireModifiers(st: GameState): void {
+  const r = st.round;
+  const p = st.activePlayer;
+  st.roundModifiers = st.roundModifiers.filter((m) => !(m.until.round < r || (m.until.round === r && m.until.player <= p)));
+}
+
+function checkEndTrigger(st: GameState): void {
+  if (st.endTrigger) return;
+  const c = st.config;
+  if (c.endMode === 'vpRace' && st.players.some((p) => p.vp >= c.endValue)) {
+    st.endTrigger = { reason: 'vpRace', endsAfterRound: st.round };
+  } else if (c.endMode === 'lapRace' && st.players.some((p) => p.laps >= c.endValue)) {
+    st.endTrigger = { reason: 'lapRace', endsAfterRound: st.round };
+  }
+}
+
+export function standings(st: GameState): Standing[] {
+  return st.players.map((p) => ({ player: p.id, vp: p.vp, coins: p.coins }));
+}
+
+/** Highest VP wins; ties break on coins, then on fewer tiles, then lower seat. */
+export function rankPlayers(st: GameState): number[] {
+  return st.players
+    .map((p) => p.id)
+    .sort((a, b) => {
+      const pa = st.players[a]!, pb = st.players[b]!;
+      if (pb.vp !== pa.vp) return pb.vp - pa.vp;
+      if (pb.coins !== pa.coins) return pb.coins - pa.coins;
+      const ta = ownedTileCount(pa), tb = ownedTileCount(pb);
+      if (ta !== tb) return ta - tb;
+      return a - b;
+    });
+}
+
+function endTurn(ctx: Ctx): void {
+  const st = ctx.st;
+  refillShop(ctx);
+  expireModifiers(st);
+  checkEndTrigger(st);
+  st.shopActionsLeft = 0;
+  if (st.activePlayer + 1 < st.players.length) {
+    st.activePlayer += 1;
+    st.phase = 'roll';
+    st.pending = freshRollContext();
+    return;
+  }
+  // round end
+  ctx.events.push({ t: 'roundEnded', round: st.round, standings: standings(st) });
+  let reason: string | null = null;
+  if (st.endTrigger && st.round >= st.endTrigger.endsAfterRound) reason = st.endTrigger.reason;
+  else if (st.round >= st.config.maxRounds) reason = 'maxRounds';
+  if (reason) {
+    st.phase = 'ended';
+    st.pending = null;
+    st.winner = rankPlayers(st)[0]!;
+    ctx.events.push({ t: 'gameEnded', reason, winner: st.winner, rounds: st.round });
+    return;
+  }
+  st.round += 1;
+  st.activePlayer = 0;
+  st.phase = 'roll';
+  st.pending = freshRollContext();
+}
+
+// ---------------------------------------------------------------------------
+// Hypothetical roll (for lookahead bots). Not part of the replayable action
+// stream: it builds a what-if state in which `player` rolls `dice` right now.
+
+export function previewRoll(
+  state: GameState,
+  player: number,
+  dice: number[],
+  pickTarget: (s: GameState, legal: Action[]) => Action,
+): GameState {
+  const st = cloneState(state);
+  st.activePlayer = player;
+  st.phase = 'roll';
+  st.pending = freshRollContext();
+  const ctx: Ctx = { st, events: [], forcedDice: dice, allowReroll: false };
+  doRoll(ctx);
+  let guard = 0;
+  while (st.phase === 'roll' && st.pending?.choice && guard++ < 50) {
+    const legal = legalActions(st);
+    const a = pickTarget(st, legal);
+    applyAction(ctx, a);
+  }
+  return st;
+}
